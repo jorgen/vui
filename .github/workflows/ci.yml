@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: 3rdparty
-          key: 3rdparty-${{ runner.os }}-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'CMakeLists.txt') }}
+          key: 3rdparty-${{ runner.os }}-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'cmake/cmdep.lock', 'CMakeLists.txt') }}
           restore-keys: 3rdparty-${{ runner.os }}-
 
       - name: Configure
@@ -76,7 +76,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: 3rdparty
-          key: 3rdparty-${{ runner.os }}-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'CMakeLists.txt') }}
+          key: 3rdparty-${{ runner.os }}-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'cmake/cmdep.lock', 'CMakeLists.txt') }}
           restore-keys: 3rdparty-${{ runner.os }}-
 
       - name: Configure and build
@@ -103,7 +103,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: 3rdparty
-          key: 3rdparty-${{ runner.os }}-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'CMakeLists.txt') }}
+          key: 3rdparty-${{ runner.os }}-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'cmake/cmdep.lock', 'CMakeLists.txt') }}
           restore-keys: 3rdparty-${{ runner.os }}-
 
       - name: Install NASM

@@ -5,7 +5,8 @@
 
 CmDepFetchGit(vio 1efa34f
     https://github.com/jorgen/vio.git
-    1efa34f9b9cfae6d6268791267a66a63f1a5fb57)
+    1efa34f9b9cfae6d6268791267a66a63f1a5fb57
+    SHA256=a5dc12a4e47b5d14ac1c4c4488e228d0fa90c3243302ff35c5ea923d27ae1700)
 
 # Vulkan-Headers: the declarations only. The renderer loads the Vulkan loader at run time
 # (DECISIONS.md G6, G31), so nothing is linked and no Vulkan SDK is needed to build.
