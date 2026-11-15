@@ -46,7 +46,6 @@ Copyright (c) 2026 Jørgen Lind
 #include <vio/operation/sleep.h>
 #include <vio/run.h>
 
-namespace gui = vui;
 namespace ui = vui::ui;
 using namespace std::chrono_literals;
 
@@ -456,7 +455,7 @@ struct app_t
       .padding = 16,
       .children =
         {
-          ui::row_t{.gap = 8, .align = ui::align_t::center, .children = {ui::icon_t{.path = icon, .size = 24, .color = gold}, ui::text_t{.text = "vio ui: counters and plots", .size = 20, .color = ink}}},
+          ui::row_t{.gap = 8, .align = ui::align_t::center, .children = {ui::icon_t{.path = icon, .size = 24, .color = gold}, ui::text_t{.text = "vui: counters and plots", .size = 20, .color = ink}}},
           ui::row_t{.gap = 32,
                     .children =
                       {
@@ -492,7 +491,7 @@ int main(int argc, char **argv)
       co_return 1;
     }
     {
-      auto window = vui::window_t::create(*display, {.title = "vio ui: counters and plots", .size = {1100, 920}});
+      auto window = vui::window_t::create(*display, {.title = "vui: counters and plots", .size = {1100, 920}});
       if (!window)
         co_return 1;
       auto closing = [](vui::window_t &window, std::chrono::milliseconds limit) -> vio::task_t<void> {

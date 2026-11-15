@@ -32,7 +32,6 @@ Copyright (c) 2026 Jørgen Lind
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
-namespace gui = vui;
 
 int main(int argc, char **argv)
 {

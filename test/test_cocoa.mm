@@ -40,7 +40,6 @@ Copyright (c) 2026 Jørgen Lind
 #import <QuartzCore/CAMetalLayer.h>
 
 using namespace std::chrono_literals;
-namespace gui = vui;
 
 namespace
 {

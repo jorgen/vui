@@ -43,7 +43,6 @@ Copyright (c) 2026 Jørgen Lind
 #include <d3d12.h>
 #include <dxgi1_6.h>
 
-namespace gui = vui;
 
 namespace
 {

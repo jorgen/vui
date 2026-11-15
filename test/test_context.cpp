@@ -39,7 +39,6 @@ Copyright (c) 2026 Jørgen Lind
 
 #include "gui_test_helpers.h"
 
-namespace gui = vui;
 
 namespace
 {

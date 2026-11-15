@@ -53,7 +53,6 @@ Copyright (c) 2026 Jørgen Lind
 #include <vio/operation/sleep.h>
 #include <vio/run.h>
 
-namespace gui = vui;
 namespace ui = vui::ui;
 using namespace std::chrono_literals;
 
@@ -740,7 +739,7 @@ int main(int argc, char **argv)
         co_return 1;
       }
       {
-        auto window = vui::window_t::create(*display, {.title = "vio ui: 200,000 chips", .size = {1400, 900}});
+        auto window = vui::window_t::create(*display, {.title = "vui: 200,000 chips", .size = {1400, 900}});
         if (!window)
           co_return 1;
         auto closing = [](vui::window_t &window, std::chrono::milliseconds limit) -> vio::task_t<void>

@@ -20,7 +20,7 @@ Copyright (c) 2026 Jørgen Lind
   THE SOFTWARE.
 */
 
-// Presses, a timer and a socket in one behaviour (gui/PLAN.md, phase 8). A server in the same
+// Presses, a timer and a socket in one behaviour (PLAN.md, phase 8). A server in the same
 // process writes a line every few hundred milliseconds over a real TCP connection; the window's
 // one behaviour merges those lines with a once-a-second clock and the "clear" button, in one loop
 // with no callbacks and no locks.
@@ -40,7 +40,6 @@ Copyright (c) 2026 Jørgen Lind
 #include <vio/operation/tcp_server.h>
 #include <vio/run.h>
 
-namespace gui = vui;
 namespace ui = vui::ui;
 using namespace std::chrono_literals;
 
@@ -73,7 +72,7 @@ struct feed_t
         ui::row_t{
           .gap = 12,
           .align = ui::align_t::center,
-          .children = {ui::text_t{.text = "vio ui: a socket feed", .size = 20, .color = ink}, ui::spacer_t{},
+          .children = {ui::text_t{.text = "vui: a socket feed", .size = 20, .color = ink}, ui::spacer_t{},
                        ui::text_t{.text = std::to_string(received) + " lines, " + std::to_string(seconds) + " s" + (closed ? ", closed" : ""), .size = 14, .color = grey},
                        ui::box_t{.size = {64, 28}, .color = clear.hovered() ? ui::color_t{0.4f, 0.6f, 1, 1} : accent, .radius = 6, .events = clear, .children = {ui::text_t{.text = "clear", .size = 14, .color = ink}}}}},
         ui::box_t{.color = panel, .radius = 8, .grow = 1, .padding = 12, .align_x = ui::align_t::start, .align_y = ui::align_t::start, .children = {ui::column_t{.gap = 4, .children = std::move(entries)}}},
@@ -156,7 +155,7 @@ int main(int argc, char **argv)
       {
         bool stop = false;
         auto writer = serve(loop, accepted.value(), stop);
-        auto window = vui::window_t::create(*display, {.title = "vio ui: a socket feed", .size = {900, 700}});
+        auto window = vui::window_t::create(*display, {.title = "vui: a socket feed", .size = {900, 700}});
         if (!window)
           co_return 1;
         auto closing = [](vui::window_t &window, std::chrono::milliseconds limit) -> vio::task_t<void>

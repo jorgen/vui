@@ -21,7 +21,7 @@ Copyright (c) 2026 Jørgen Lind
 */
 
 // Text and icons: shaping, the atlas, labels at two scales, and the pixels they become
-// (gui/PLAN.md, "Rendering"; G27, G39, G40). The fonts are HarfBuzz's test fonts, so these run only
+// (PLAN.md, "Rendering"; G27, G39, G40). The fonts are HarfBuzz's test fonts, so these run only
 // where HarfBuzz was fetched rather than found on the system.
 
 #include <doctest/doctest.h>
@@ -45,7 +45,6 @@ Copyright (c) 2026 Jørgen Lind
 #if defined(VUI_TEST_FONTS)
 
 using namespace std::chrono_literals;
-namespace gui = vui;
 namespace ui = vui::ui;
 
 namespace

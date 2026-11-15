@@ -70,7 +70,7 @@ exactly then.
 
 ## Examples
 
-`gui/examples/`, each built as `vui_<name>`. Each takes an optional limit (frames or
+`examples/`, each built as `vui_<name>`. Each takes an optional limit (frames or
 milliseconds) and quits after it, which is how CI runs them.
 
 | example | shows |

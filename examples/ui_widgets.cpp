@@ -38,7 +38,6 @@ Copyright (c) 2026 Jørgen Lind
 #include <vio/operation/sleep.h>
 #include <vio/run.h>
 
-namespace gui = vui;
 namespace ui = vui::ui;
 using namespace std::chrono_literals;
 
@@ -84,7 +83,7 @@ struct form_t
                         .padding = 24,
                         .children =
                           {
-                            ui::text_t{.text = "vio ui: widgets", .size = 22, .color = ink},
+                            ui::text_t{.text = "vui: widgets", .size = 22, .color = ink},
                             ui::box_t{.color = panel,
                                       .radius = 10,
                                       .padding = 20,
@@ -173,7 +172,7 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "no display: %s\n", display.error().msg.c_str());
         co_return 1;
       }
-      auto window = vui::window_t::create(*display, {.title = "vio ui: widgets", .size = {720, 820}});
+      auto window = vui::window_t::create(*display, {.title = "vui: widgets", .size = {720, 820}});
       if (!window)
         co_return 1;
       auto closing = [](vui::window_t &window, std::chrono::milliseconds limit) -> vio::task_t<void>

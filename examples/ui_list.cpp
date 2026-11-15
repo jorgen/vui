@@ -20,7 +20,7 @@ Copyright (c) 2026 Jørgen Lind
   THE SOFTWARE.
 */
 
-// A list of live rows (gui/PLAN.md, phase 7). "add" puts a row at the top; each row counts its own
+// A list of live rows (PLAN.md, phase 7). "add" puts a row at the top; each row counts its own
 // presses, "work" runs a job in a child scope that the row's "x" cancels along with everything else
 // the row is doing. Pressing a row's label selects it, and the selection reaches the row as props.
 // Rows stretch to the window's width and a spacer pushes their buttons to the right edge.
@@ -37,7 +37,6 @@ Copyright (c) 2026 Jørgen Lind
 #include <vio/operation/sleep.h>
 #include <vio/run.h>
 
-namespace gui = vui;
 namespace ui = vui::ui;
 using namespace std::chrono_literals;
 
@@ -147,7 +146,7 @@ struct app_t
                         .children = {
                           ui::row_t{.gap = 12,
                                     .align = ui::align_t::center,
-                                    .children = {ui::text_t{.text = "vio ui: a list", .size = 20, .color = ink}, ui::spacer_t{}, ui::text_t{.text = std::to_string(rows.size()) + " rows", .size = 14, .color = grey},
+                                    .children = {ui::text_t{.text = "vui: a list", .size = 20, .color = ink}, ui::spacer_t{}, ui::text_t{.text = std::to_string(rows.size()) + " rows", .size = 14, .color = grey},
                                                  button(add, "add", accent, 56)}},
                           ui::column_t{.gap = 6, .align = ui::align_t::stretch, .children = std::move(children)},
                         }};
@@ -203,7 +202,7 @@ int main(int argc, char **argv)
         co_return 1;
       }
       {
-        auto window = vui::window_t::create(*display, {.title = "vio ui: a list", .size = {900, 640}});
+        auto window = vui::window_t::create(*display, {.title = "vui: a list", .size = {900, 640}});
         if (!window)
           co_return 1;
         auto closing = [](vui::window_t &window, std::chrono::milliseconds limit) -> vio::task_t<void>

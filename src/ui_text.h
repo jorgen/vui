@@ -22,7 +22,7 @@ Copyright (c) 2026 Jørgen Lind
 
 #pragma once
 
-// Text and icons for the toolkit (gui/PLAN.md, "Rendering"; G27, G39, G40): HarfBuzz shapes,
+// Text and icons for the toolkit (PLAN.md, "Rendering"; G27, G39, G40): HarfBuzz shapes,
 // FreeType rasterizes into a coverage atlas, and layout gets back coverage prims and a size.
 
 #include <cstdint>

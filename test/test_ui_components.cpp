@@ -42,7 +42,6 @@ Copyright (c) 2026 Jørgen Lind
 #include "gui_test_helpers.h"
 
 using namespace std::chrono_literals;
-namespace gui = vui;
 namespace ui = vui::ui;
 
 namespace

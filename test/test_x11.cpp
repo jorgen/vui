@@ -41,7 +41,6 @@ Copyright (c) 2026 Jørgen Lind
 #include <X11/keysym.h>
 
 using namespace std::chrono_literals;
-namespace gui = vui;
 
 namespace
 {

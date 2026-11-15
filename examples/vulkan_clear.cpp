@@ -33,7 +33,6 @@ Copyright (c) 2026 Jørgen Lind
 #include <vui/vui.h>
 #include <vio/run.h>
 
-namespace gui = vui;
 
 namespace
 {

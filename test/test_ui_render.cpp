@@ -20,7 +20,7 @@ Copyright (c) 2026 Jørgen Lind
   THE SOFTWARE.
 */
 
-// The display list, its chunks, and the Vulkan pipeline that draws it (gui/PLAN.md, "Rendering").
+// The display list, its chunks, and the Vulkan pipeline that draws it (PLAN.md, "Rendering").
 
 #include <doctest/doctest.h>
 
@@ -41,7 +41,6 @@ Copyright (c) 2026 Jørgen Lind
 #include "ui_renderer.h"
 
 using namespace std::chrono_literals;
-namespace gui = vui;
 namespace ui = vui::ui;
 
 namespace

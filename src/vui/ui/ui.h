@@ -24,7 +24,7 @@ Copyright (c) 2026 Jørgen Lind
 
 // A declarative toolkit on the window layer. A component is one struct: its state, a const view()
 // that describes it as a tree of struct literals, and optionally a behave(scope_t &) coroutine that
-// reacts to events for as long as the component is mounted. gui/PLAN.md, "UI toolkit", is the
+// reacts to events for as long as the component is mounted. PLAN.md, "UI toolkit", is the
 // design; this header is phase 6 of it.
 
 #include <algorithm>
@@ -511,7 +511,7 @@ struct box_t
 };
 
 // ---------------------------------------------------------------------------------------------
-// Text and icons (gui/PLAN.md, "Rendering"; G27, G39)
+// Text and icons (PLAN.md, "Rendering"; G27, G39)
 
 // A loaded font: a TrueType or OpenType file, or the first face of a collection. Cheap to copy and
 // safe to share between threads; what is not (FreeType faces, the atlas) is kept per window.
@@ -1463,7 +1463,7 @@ private:
 };
 
 // ---------------------------------------------------------------------------------------------
-// Several sources at once (gui/PLAN.md, "Several events at once"; G43)
+// Several sources at once (PLAN.md, "Several events at once"; G43)
 
 namespace detail
 {
@@ -1669,7 +1669,7 @@ struct draw_item_t
 };
 
 // ---------------------------------------------------------------------------------------------
-// The display list (gui/PLAN.md, "Rendering")
+// The display list (PLAN.md, "Rendering")
 
 enum class prim_kind_t : std::uint32_t
 {

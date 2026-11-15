@@ -40,7 +40,6 @@ Copyright (c) 2026 Jørgen Lind
 #include "ui_renderer.h"
 
 using namespace std::chrono_literals;
-namespace gui = vui;
 namespace ui = vui::ui;
 
 namespace

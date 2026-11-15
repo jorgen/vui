@@ -1,4 +1,4 @@
-// The toolkit's primitive pipeline (gui/PLAN.md, "Rendering"; G26, G39). One instanced quad per
+// The toolkit's primitive pipeline (PLAN.md, "Rendering"; G26, G39). One instanced quad per
 // primitive. A shape is computed analytically per pixel: a rounded rectangle with per-corner radii
 // and an optional border, or with blur > 0 a Gaussian-blurred one, which is a shadow. Coverage --
 // glyphs and icons -- is read from the atlas texel for texel, one texel per pixel. A segment is a

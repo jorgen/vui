@@ -32,7 +32,6 @@ Copyright (c) 2026 Jørgen Lind
 #include <vio/operation/sleep.h>
 #include <vio/run.h>
 
-namespace gui = vui;
 using namespace std::chrono_literals;
 
 namespace

@@ -33,7 +33,6 @@ Copyright (c) 2026 Jørgen Lind
 #include <vio/operation/sleep.h>
 #include <vio/task.h>
 
-namespace gui = vui;
 using namespace std::chrono_literals;
 
 struct state_t
@@ -111,7 +110,7 @@ vio::task_t<void> run(vio::event_loop_t &loop, int frame_limit)
   }
   std::printf("window system: %s\n", display->backend_name());
   {
-    auto window = vui::window_t::create(*display, {.title = "hello vio", .size = {640, 400}});
+    auto window = vui::window_t::create(*display, {.title = "hello vui", .size = {640, 400}});
     if (!window)
     {
       loop.stop();

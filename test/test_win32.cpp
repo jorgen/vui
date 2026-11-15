@@ -50,7 +50,6 @@ Copyright (c) 2026 Jørgen Lind
 #include <dxgi1_6.h>
 
 using namespace std::chrono_literals;
-namespace gui = vui;
 
 namespace
 {
