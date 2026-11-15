@@ -28,6 +28,8 @@ CmDepFetch()
 include(cmake/Build3rdParty.cmake)
 Build3rdParty()
 
+add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+
 if(VUI_BUILD_TESTS)
     enable_testing()
 endif()
