@@ -481,7 +481,8 @@ struct text_engine_t::impl_t
       using contour_type = std::remove_reference_t<decltype(*outline.contours)>;
       for (std::size_t i = 0; i < ends.size(); ++i)
         outline.contours[i] = contour_type(ends[i] - 1);
-      outline.flags = path->even_odd ? FT_OUTLINE_EVEN_ODD_FILL : FT_OUTLINE_NONE;
+      if (path->even_odd)
+        outline.flags |= FT_OUTLINE_EVEN_ODD_FILL;
       std::vector<std::uint8_t> raster(std::size_t(side) * side, 0);
       FT_Bitmap bitmap{};
       bitmap.rows = unsigned(side);
