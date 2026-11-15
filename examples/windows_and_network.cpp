@@ -29,21 +29,21 @@ Copyright (c) 2026 Jørgen Lind
 #include <string>
 #include <vector>
 
-#include <vio/gui/context.h>
-#include <vio/gui/gui.h>
+#include <vui/context.h>
+#include <vui/vui.h>
 #include <vio/operation/sleep.h>
 #include <vio/operation/tcp.h>
 #include <vio/operation/tcp_server.h>
 #include <vio/run.h>
 
-namespace gui = vio::gui;
+namespace gui = vui;
 using namespace std::chrono_literals;
 
 namespace
 {
 struct state_t
 {
-  std::array<std::optional<gui::window_t>, 2> windows;
+  std::array<std::optional<vui::window_t>, 2> windows;
   int messages = 0;
   bool done = false;
 
@@ -53,9 +53,9 @@ struct state_t
   }
 };
 
-vio::task_t<void> draw(gui::window_t &window, state_t &state, float hue)
+vio::task_t<void> draw(vui::window_t &window, state_t &state, float hue)
 {
-  auto context = gui::gl_context_t::create(window);
+  auto context = vui::gl_context_t::create(window);
   if (!context)
   {
     std::println(stderr, "no OpenGL: {}", context.error().msg);
@@ -75,9 +75,9 @@ vio::task_t<void> draw(gui::window_t &window, state_t &state, float hue)
   }
 }
 
-vio::task_t<void> close_on_request(std::optional<gui::window_t> &window)
+vio::task_t<void> close_on_request(std::optional<vui::window_t> &window)
 {
-  auto requests = window->subscribe<gui::close_request_t>();
+  auto requests = window->subscribe<vui::close_request_t>();
   if (co_await requests)
     window.reset();
 }
@@ -124,7 +124,7 @@ int main(int argc, char **argv)
 {
   const auto limit = std::chrono::milliseconds(argc > 1 ? std::atoi(argv[1]) : 0);
   return vio::run([limit](vio::event_loop_t &loop) -> vio::task_t<int> {
-    auto display = gui::display_t::open(loop);
+    auto display = vui::display_t::open(loop);
     if (!display)
     {
       std::println(stderr, "no display: {}", display.error().msg);
@@ -143,7 +143,7 @@ int main(int argc, char **argv)
     std::vector<vio::task_t<void>> closing;
     for (int i = 0; i < 2; ++i)
     {
-      auto window = gui::window_t::create(*display, {.title = "waiting for the network", .size = {360, 240}});
+      auto window = vui::window_t::create(*display, {.title = "waiting for the network", .size = {360, 240}});
       if (!window)
         co_return 1;
       auto &slot = state.windows[static_cast<std::size_t>(i)];

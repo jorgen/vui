@@ -29,9 +29,9 @@ Copyright (c) 2026 Jørgen Lind
 #include <span>
 #include <vector>
 
-#include "vio/gui/gui.h"
+#include "vui/vui.h"
 
-namespace vio::gui
+namespace vui
 {
 struct gl_config_t
 {
@@ -81,12 +81,12 @@ public:
   gl_context_t &operator=(gl_context_t &&) noexcept = default;
   ~gl_context_t() = default;
 
-  static std::expected<gl_context_t, error_t> create(window_t &window, const gl_config_t &config = {});
+  static std::expected<gl_context_t, vio::error_t> create(window_t &window, const gl_config_t &config = {});
 
-  std::expected<void, error_t> make_current();
+  std::expected<void, vio::error_t> make_current();
   void release_current();
-  std::expected<void, error_t> swap_buffers();
-  std::expected<void, error_t> set_swap_interval(int interval);
+  std::expected<void, vio::error_t> swap_buffers();
+  std::expected<void, vio::error_t> set_swap_interval(int interval);
   [[nodiscard]] void *proc_address(const char *name) const;
   [[nodiscard]] gl_native_t native() const;
 
@@ -97,7 +97,7 @@ public:
   }
 
   [[nodiscard]] std::vector<std::intptr_t> opencl_properties(void *platform = nullptr) const;
-  [[nodiscard]] std::expected<std::array<std::uint8_t, 16>, error_t> device_uuid() const;
+  [[nodiscard]] std::expected<std::array<std::uint8_t, 16>, vio::error_t> device_uuid() const;
 
   [[nodiscard]] explicit operator bool() const noexcept
   {
@@ -114,13 +114,13 @@ using get_instance_proc_addr_t = void (*(*)(void *instance, const char *name))()
 
 [[nodiscard]] std::vector<const char *> required_instance_extensions(const display_t &display);
 [[nodiscard]] std::vector<const char *> required_instance_extensions(platform_t platform);
-std::expected<std::uint64_t, error_t> create_surface(window_t &window, void *instance, get_instance_proc_addr_t get_instance_proc_addr, const void *allocator = nullptr);
-std::expected<std::array<std::uint8_t, 16>, error_t> device_uuid(void *instance, void *physical_device, get_instance_proc_addr_t get_instance_proc_addr);
+std::expected<std::uint64_t, vio::error_t> create_surface(window_t &window, void *instance, get_instance_proc_addr_t get_instance_proc_addr, const void *allocator = nullptr);
+std::expected<std::array<std::uint8_t, 16>, vio::error_t> device_uuid(void *instance, void *physical_device, get_instance_proc_addr_t get_instance_proc_addr);
 } // namespace vulkan
 
 namespace metal
 {
-std::expected<void *, error_t> create_layer(window_t &window);
+std::expected<void *, vio::error_t> create_layer(window_t &window);
 }
 
 namespace d3d12
@@ -132,9 +132,9 @@ struct swap_chain_config_t
   bool allow_tearing = false;
 };
 
-std::expected<void *, error_t> create_swap_chain(window_t &window, void *command_queue, const swap_chain_config_t &config = {});
-std::expected<void, error_t> resize_swap_chain(void *swap_chain, extent_t framebuffer);
+std::expected<void *, vio::error_t> create_swap_chain(window_t &window, void *command_queue, const swap_chain_config_t &config = {});
+std::expected<void, vio::error_t> resize_swap_chain(void *swap_chain, extent_t framebuffer);
 } // namespace d3d12
 
-std::expected<std::array<std::uint8_t, 8>, error_t> adapter_luid(window_t &window);
-} // namespace vio::gui
+std::expected<std::array<std::uint8_t, 8>, vio::error_t> adapter_luid(window_t &window);
+} // namespace vui

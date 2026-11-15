@@ -32,8 +32,8 @@ Copyright (c) 2026 Jørgen Lind
 #include <vector>
 
 #include <vio/event_loop.h>
-#include <vio/gui/gui.h>
-#include <vio/gui/ui/ui.h>
+#include <vui/vui.h>
+#include <vui/ui/ui.h>
 #include <vio/operation/sleep.h>
 #include <vio/operation/tcp.h>
 #include <vio/operation/tcp_server.h>
@@ -42,8 +42,8 @@ Copyright (c) 2026 Jørgen Lind
 #include "gui_test_helpers.h"
 
 using namespace std::chrono_literals;
-namespace gui = vio::gui;
-namespace ui = vio::gui::ui;
+namespace gui = vui;
+namespace ui = vui::ui;
 
 namespace
 {
@@ -53,19 +53,19 @@ constexpr ui::color_t green{0, 1, 0, 1};
 // Run `root` in a 300x200 null window: settle, then `act` (which may press, change state and settle
 // again), then close. `rects` is the last layout's hit-test list.
 template <typename C>
-void drive(C &root, std::vector<ui::rect_t> &rects, std::function<vio::task_t<void>(vio::event_loop_t &, gui::window_t &)> act = {})
+void drive(C &root, std::vector<ui::rect_t> &rects, std::function<vio::task_t<void>(vio::event_loop_t &, vui::window_t &)> act = {})
 {
   vio::event_loop_t loop;
   run_gui_test(loop,
-               [](vio::event_loop_t &loop, C &root, std::vector<ui::rect_t> &rects, std::function<vio::task_t<void>(vio::event_loop_t &, gui::window_t &)> act) -> vio::task_t<void>
+               [](vio::event_loop_t &loop, C &root, std::vector<ui::rect_t> &rects, std::function<vio::task_t<void>(vio::event_loop_t &, vui::window_t &)> act) -> vio::task_t<void>
                {
-                 gui::display_config_t display_config;
+                 vui::display_config_t display_config;
                  display_config.backend = "null";
                  display_config.frame_interval_ns = std::chrono::nanoseconds(2ms).count();
-                 auto display = gui::display_t::open(loop, display_config);
+                 auto display = vui::display_t::open(loop, display_config);
                  REQUIRE(display.has_value());
                  {
-                   auto window = gui::window_t::create(*display, {.size = {300, 200}});
+                   auto window = vui::window_t::create(*display, {.size = {300, 200}});
                    ui::run_config_t config;
                    config.on_layout = [&rects](std::span<const ui::draw_item_t> items)
                    {
@@ -89,12 +89,12 @@ vio::task_t<void> settle(vio::event_loop_t &loop)
   (void)co_await vio::sleep(loop, 40ms);
 }
 
-void click(gui::window_t &window, gui::point_t at)
+void click(vui::window_t &window, vui::point_t at)
 {
-  window.impl()->on_input(gui::pointer_move_event_t{at});
-  window.impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, true, at});
-  window.impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, false, at});
-  window.impl()->on_input(gui::pointer_move_event_t{{900, 900}});
+  window.impl()->on_input(vui::pointer_move_event_t{at});
+  window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, at});
+  window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, at});
+  window.impl()->on_input(vui::pointer_move_event_t{{900, 900}});
 }
 } // namespace
 
@@ -208,7 +208,7 @@ TEST_CASE("ui list: items keep their state through inserts, and erasing one ends
   } seen;
   std::vector<ui::rect_t> rects;
   drive(page, rects,
-        [&page, &rects, &seen, &first_ended](vio::event_loop_t &loop, gui::window_t &window) -> vio::task_t<void>
+        [&page, &rects, &seen, &first_ended](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
         {
           // Press the second item three times: it grows to 23 wide.
           for (int i = 0; i < 3; ++i)
@@ -293,7 +293,7 @@ TEST_CASE("ui props: a child is rebuilt when its props change, and not when its 
   } seen;
   std::vector<ui::rect_t> rects;
   drive(holder, rects,
-        [&holder, &seen](vio::event_loop_t &loop, gui::window_t &window) -> vio::task_t<void>
+        [&holder, &seen](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
         {
           seen.views_first = holder.badge.views;
           // The parent rebuilds with the same props: the badge does not.
@@ -442,10 +442,10 @@ TEST_CASE("ui merge: presses, a timer and a socket's lines arrive in one loop, a
   run_gui_test(loop,
                [](vio::event_loop_t &loop, mixer_t &mixer) -> vio::task_t<void>
                {
-                 gui::display_config_t display_config;
+                 vui::display_config_t display_config;
                  display_config.backend = "null";
                  display_config.frame_interval_ns = std::chrono::nanoseconds(2ms).count();
-                 auto display = gui::display_t::open(loop, display_config);
+                 auto display = vui::display_t::open(loop, display_config);
                  REQUIRE(display.has_value());
                  {
                    auto server = listener(loop);
@@ -468,7 +468,7 @@ TEST_CASE("ui merge: presses, a timer and a socket's lines arrive in one loop, a
                    REQUIRE(reader.has_value());
                    mixer.reader = &reader.value();
                    {
-                     auto window = gui::window_t::create(*display, {.size = {100, 100}});
+                     auto window = vui::window_t::create(*display, {.size = {100, 100}});
                      auto running = ui::run(*window, mixer);
                      // A line split across writes, a CRLF, and an unterminated tail the close ends.
                      const std::string first = "alpha\nbeta\r\ngam";
@@ -476,9 +476,9 @@ TEST_CASE("ui merge: presses, a timer and a socket's lines arrive in one loop, a
                      (void)co_await vio::sleep(loop, 20ms);
                      const std::string second = "ma\nlast";
                      (void)co_await vio::write_tcp(*client, reinterpret_cast<const uint8_t *>(second.data()), second.size());
-                     window->impl()->on_input(gui::pointer_move_event_t{{5, 5}});
-                     window->impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, true, {5, 5}});
-                     window->impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, false, {5, 5}});
+                     window->impl()->on_input(vui::pointer_move_event_t{{5, 5}});
+                     window->impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, {5, 5}});
+                     window->impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, {5, 5}});
                      (void)co_await vio::sleep(loop, 20ms);
                      client.reset();
                      for (int i = 0; i < 50 && !mixer.finished; ++i)
@@ -529,7 +529,7 @@ TEST_CASE("ui scale: a scaled mount takes up, draws and is hit at its scaled siz
   scaled_parent_t parent;
   std::vector<ui::rect_t> rects;
   drive(parent, rects,
-        [](vio::event_loop_t &loop, gui::window_t &window) -> vio::task_t<void>
+        [](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
         {
           // Inside the scaled box (20..40 across, 10..30 down), outside what its unscaled size would be.
           click(window, {37, 27});

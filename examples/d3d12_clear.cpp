@@ -33,8 +33,8 @@ Copyright (c) 2026 Jørgen Lind
 #include <cstdlib>
 #include <print>
 
-#include <vio/gui/context.h>
-#include <vio/gui/gui.h>
+#include <vui/context.h>
+#include <vui/vui.h>
 #include <vio/operation/handle_wait.h>
 #include <vio/run.h>
 
@@ -43,7 +43,7 @@ Copyright (c) 2026 Jørgen Lind
 #include <d3d12.h>
 #include <dxgi1_6.h>
 
-namespace gui = vio::gui;
+namespace gui = vui;
 
 namespace
 {
@@ -88,7 +88,7 @@ struct renderer_t
       CloseHandle(event);
   }
 
-  bool create(gui::window_t &window)
+  bool create(vui::window_t &window)
   {
     if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))))
     {
@@ -117,14 +117,14 @@ struct renderer_t
     device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
     event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
-    auto chain = gui::d3d12::create_swap_chain(window, queue, {.buffer_count = buffers});
+    auto chain = vui::d3d12::create_swap_chain(window, queue, {.buffer_count = buffers});
     if (!chain)
     {
       std::println(stderr, "swap chain: {}", chain.error().msg);
       return false;
     }
     swap_chain = static_cast<IDXGISwapChain3 *>(*chain);
-    if (auto luid = gui::adapter_luid(window))
+    if (auto luid = vui::adapter_luid(window))
       std::println("the window's monitor is driven by the adapter with LUID {:02x}{:02x}{:02x}{:02x}..., which cuDeviceGetLuid reports for the same GPU", (*luid)[0], (*luid)[1], (*luid)[2], (*luid)[3]);
     make_targets();
     return true;
@@ -160,11 +160,11 @@ struct renderer_t
     co_return signalled.has_value();
   }
 
-  void resize(gui::extent_t framebuffer)
+  void resize(vui::extent_t framebuffer)
   {
     for (auto *&target : targets)
       release(target);
-    if (gui::d3d12::resize_swap_chain(swap_chain, framebuffer))
+    if (vui::d3d12::resize_swap_chain(swap_chain, framebuffer))
       make_targets();
   }
 
@@ -204,7 +204,7 @@ int main(int argc, char **argv)
 {
   const std::uint64_t frame_limit = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 0;
   return vio::run([frame_limit](vio::event_loop_t &loop) -> vio::task_t<int> {
-    auto display = gui::display_t::open(loop);
+    auto display = vui::display_t::open(loop);
     if (!display)
     {
       std::println(stderr, "no display: {}", display.error().msg);
@@ -212,12 +212,12 @@ int main(int argc, char **argv)
     }
     int status = 0;
     {
-      auto window = gui::window_t::create(*display, {.title = "direct3d 12 clear", .size = {640, 400}});
+      auto window = vui::window_t::create(*display, {.title = "direct3d 12 clear", .size = {640, 400}});
       if (!window)
         co_return 1;
       bool close = false;
-      auto closing = [](gui::window_t &window, bool &close) -> vio::task_t<void> {
-        auto requests = window.subscribe<gui::close_request_t>();
+      auto closing = [](vui::window_t &window, bool &close) -> vio::task_t<void> {
+        auto requests = window.subscribe<vui::close_request_t>();
         if (co_await requests)
           close = true;
       }(*window, close);
@@ -228,7 +228,7 @@ int main(int argc, char **argv)
           std::println(stderr, "Direct3D 12 setup failed");
           status = 1;
         }
-        gui::extent_t built = window->framebuffer_size();
+        vui::extent_t built = window->framebuffer_size();
         if (status == 0)
         {
           while (auto frame = co_await window->frame())

@@ -56,9 +56,9 @@ Copyright (c) 2026 Jørgen Lind
 
 #include "shaders/ui_spirv.h"
 #include "ui_renderer.h"
-#include "vio/gui/context.h"
+#include "vui/context.h"
 
-namespace vio::gui::ui::detail
+namespace vui::ui::detail
 {
 namespace
 {
@@ -303,8 +303,8 @@ bool create_instance(device_t &d, std::span<const char *const> surface_extension
     validate = std::any_of(layer_list.begin(), layer_list.end(), [&](const VkLayerProperties &p) { return std::strcmp(p.layerName, validation) == 0; });
   }
   VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-  application.pApplicationName = "vio gui";
-  application.pEngineName = "vio gui ui";
+  application.pApplicationName = "vui";
+  application.pEngineName = "vui ui";
   application.apiVersion = VK_API_VERSION_1_0;
   info.pApplicationInfo = &application;
   info.enabledExtensionCount = std::uint32_t(extensions.size());
@@ -1483,4 +1483,4 @@ std::optional<offscreen_image_t> render_offscreen_vulkan(std::span<const display
     d.vkFreeMemory(d.device, image_memory, nullptr);
   return result;
 }
-} // namespace vio::gui::ui::detail
+} // namespace vui::ui::detail

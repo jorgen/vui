@@ -31,8 +31,8 @@ Copyright (c) 2026 Jørgen Lind
 #include <vector>
 
 #include <vio/event_loop.h>
-#include <vio/gui/gui.h>
-#include <vio/gui/ui/ui.h>
+#include <vui/vui.h>
+#include <vui/ui/ui.h>
 #include <vio/operation/sleep.h>
 #include <vio/task.h>
 
@@ -40,8 +40,8 @@ Copyright (c) 2026 Jørgen Lind
 #include "ui_renderer.h"
 
 using namespace std::chrono_literals;
-namespace gui = vio::gui;
-namespace ui = vio::gui::ui;
+namespace gui = vui;
+namespace ui = vui::ui;
 
 namespace
 {
@@ -70,19 +70,19 @@ struct capture_t
 // Show `root` in a null window for a few frames, pressing at `press` if given, and keep the last
 // frame's layout.
 template <typename C>
-void capture(C &root, capture_t &out, std::optional<gui::point_t> press = std::nullopt)
+void capture(C &root, capture_t &out, std::optional<vui::point_t> press = std::nullopt)
 {
   vio::event_loop_t loop;
   run_gui_test(loop,
-               [](vio::event_loop_t &loop, C &root, capture_t &out, std::optional<gui::point_t> press) -> vio::task_t<void>
+               [](vio::event_loop_t &loop, C &root, capture_t &out, std::optional<vui::point_t> press) -> vio::task_t<void>
                {
-                 gui::display_config_t display_config;
+                 vui::display_config_t display_config;
                  display_config.backend = "null";
                  display_config.frame_interval_ns = std::chrono::nanoseconds(2ms).count();
-                 auto display = gui::display_t::open(loop, display_config);
+                 auto display = vui::display_t::open(loop, display_config);
                  REQUIRE(display.has_value());
                  {
-                   auto window = gui::window_t::create(*display, {.size = {300, 200}});
+                   auto window = vui::window_t::create(*display, {.size = {300, 200}});
                    ui::run_config_t config;
                    config.on_layout = [&out](std::span<const ui::draw_item_t> items)
                    {
@@ -103,9 +103,9 @@ void capture(C &root, capture_t &out, std::optional<gui::point_t> press = std::n
                    (void)co_await vio::sleep(loop, 40ms);
                    if (press)
                    {
-                     window->impl()->on_input(gui::pointer_move_event_t{*press});
-                     window->impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, true, *press});
-                     window->impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, false, *press});
+                     window->impl()->on_input(vui::pointer_move_event_t{*press});
+                     window->impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, *press});
+                     window->impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, *press});
                      (void)co_await vio::sleep(loop, 40ms);
                    }
                    window->close();
@@ -223,7 +223,7 @@ TEST_CASE("ui layout: pressing what is drawn on a button presses the button")
     }
   } root;
   capture_t seen;
-  capture(root, seen, gui::point_t{40, 20});
+  capture(root, seen, vui::point_t{40, 20});
   CHECK(root.count == 1);
 }
 
@@ -428,8 +428,8 @@ struct frame_copy_t
   std::vector<ui::run_t> runs;
   std::vector<std::uint8_t> atlas;
   ui::atlas_view_t view;
-  gui::extent_t logical;
-  gui::extent_t framebuffer;
+  vui::extent_t logical;
+  vui::extent_t framebuffer;
   float scale = 1;
 
   explicit frame_copy_t(const ui::display_list_t &list)
@@ -460,29 +460,29 @@ struct frame_copy_t
 // Run `root` in a 200x100 null window and keep every display list; `poke` is pressed once after
 // the first settle if given.
 template <typename C>
-std::vector<frame_copy_t> frames_of(C &root, std::optional<gui::point_t> poke = std::nullopt)
+std::vector<frame_copy_t> frames_of(C &root, std::optional<vui::point_t> poke = std::nullopt)
 {
   std::vector<frame_copy_t> frames;
   vio::event_loop_t loop;
   run_gui_test(loop,
-               [](vio::event_loop_t &loop, C &root, std::vector<frame_copy_t> &frames, std::optional<gui::point_t> poke) -> vio::task_t<void>
+               [](vio::event_loop_t &loop, C &root, std::vector<frame_copy_t> &frames, std::optional<vui::point_t> poke) -> vio::task_t<void>
                {
-                 gui::display_config_t display_config;
+                 vui::display_config_t display_config;
                  display_config.backend = "null";
                  display_config.frame_interval_ns = std::chrono::nanoseconds(2ms).count();
-                 auto display = gui::display_t::open(loop, display_config);
+                 auto display = vui::display_t::open(loop, display_config);
                  REQUIRE(display.has_value());
                  {
-                   auto window = gui::window_t::create(*display, {.size = {200, 100}});
+                   auto window = vui::window_t::create(*display, {.size = {200, 100}});
                    ui::run_config_t config;
                    config.on_display_list = [&frames](const ui::display_list_t &list) { frames.emplace_back(list); };
                    auto running = ui::run(*window, root, std::move(config));
                    (void)co_await vio::sleep(loop, 40ms);
                    if (poke)
                    {
-                     window->impl()->on_input(gui::pointer_move_event_t{*poke});
-                     window->impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, true, *poke});
-                     window->impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, false, *poke});
+                     window->impl()->on_input(vui::pointer_move_event_t{*poke});
+                     window->impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, *poke});
+                     window->impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, *poke});
                      (void)co_await vio::sleep(loop, 40ms);
                    }
                    window->close();
@@ -613,7 +613,7 @@ struct heat_t
 TEST_CASE("vulkan: a heatmap's cells are coloured through viridis, and a changed value reaches the screen")
 {
   heat_t root;
-  auto frames = frames_of(root, gui::point_t{85, 5});
+  auto frames = frames_of(root, vui::point_t{85, 5});
   REQUIRE(frames.size() >= 2);
   // The update went through the atlas's dirty rectangle, not a new atlas.
   CHECK(frames.front().view.generation == frames.back().view.generation);

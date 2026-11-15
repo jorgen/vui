@@ -27,25 +27,25 @@ Copyright (c) 2026 Jørgen Lind
 #include <variant>
 #include <vector>
 
-#include <vio/gui/context.h>
-#include <vio/gui/gui.h>
+#include <vui/context.h>
+#include <vui/vui.h>
 #include <vio/operation/sleep.h>
 #include <vio/run.h>
 
-namespace gui = vio::gui;
+namespace gui = vui;
 using namespace std::chrono_literals;
 
 namespace
 {
-const char *button_name(gui::button_t button)
+const char *button_name(vui::button_t button)
 {
   switch (button)
   {
-  case gui::button_t::left: return "left";
-  case gui::button_t::right: return "right";
-  case gui::button_t::middle: return "middle";
-  case gui::button_t::back: return "back";
-  case gui::button_t::forward: return "forward";
+  case vui::button_t::left: return "left";
+  case vui::button_t::right: return "right";
+  case vui::button_t::middle: return "middle";
+  case vui::button_t::back: return "back";
+  case vui::button_t::forward: return "forward";
   default: return "other";
   }
 }
@@ -62,7 +62,7 @@ struct shared_t
   int pastes = 0;
 };
 
-vio::task_t<void> paste(gui::display_t &display, shared_t &shared)
+vio::task_t<void> paste(vui::display_t &display, shared_t &shared)
 {
   auto text = co_await display.clipboard_text();
   if (text)
@@ -76,30 +76,30 @@ vio::task_t<void> paste(gui::display_t &display, shared_t &shared)
 // sees its events independently of the others, and each loop ends when the window closes.
 
 // Keys and text share a subscription, because their interleaving matters to anything that edits.
-vio::task_t<void> keyboard(gui::display_t &display, gui::window_t &window, shared_t &shared)
+vio::task_t<void> keyboard(vui::display_t &display, vui::window_t &window, shared_t &shared)
 {
   std::vector<vio::task_t<void>> pastes;
-  auto keys = window.subscribe<gui::key_event_t, gui::text_event_t>();
+  auto keys = window.subscribe<vui::key_event_t, vui::text_event_t>();
   while (auto event = co_await keys)
   {
-    if (auto *text = std::get_if<gui::text_event_t>(&*event))
+    if (auto *text = std::get_if<vui::text_event_t>(&*event))
     {
       std::println("text \"{}\"", text->text);
       continue;
     }
-    const auto &key = std::get<gui::key_event_t>(*event);
+    const auto &key = std::get<vui::key_event_t>(*event);
     std::println("key {} scancode {} {}{}", static_cast<int>(key.key), key.scancode, key.pressed ? "down" : "up", key.repeat ? " (repeat)" : "");
     if (!key.pressed)
       continue;
-    const bool control = gui::has(key.modifiers, gui::modifier_t::control) || gui::has(key.modifiers, gui::modifier_t::super);
-    if (key.key == gui::key_t::escape)
+    const bool control = vui::has(key.modifiers, vui::modifier_t::control) || vui::has(key.modifiers, vui::modifier_t::super);
+    if (key.key == vui::key_t::escape)
       shared.done = true;
-    else if (control && key.key == gui::key_t::c)
+    else if (control && key.key == vui::key_t::c)
       display.set_clipboard_text("copied from vio");
-    else if (control && key.key == gui::key_t::v)
+    else if (control && key.key == vui::key_t::v)
       pastes.push_back(paste(display, shared));
-    else if (key.key >= gui::key_t::digit_0 && key.key <= gui::key_t::digit_9)
-      window.set_cursor(static_cast<gui::cursor_t>(static_cast<int>(key.key) - static_cast<int>(gui::key_t::digit_0)));
+    else if (key.key >= vui::key_t::digit_0 && key.key <= vui::key_t::digit_9)
+      window.set_cursor(static_cast<vui::cursor_t>(static_cast<int>(key.key) - static_cast<int>(vui::key_t::digit_0)));
   }
   for (auto &pending : pastes)
     co_await std::move(pending);
@@ -107,31 +107,31 @@ vio::task_t<void> keyboard(gui::display_t &display, gui::window_t &window, share
 
 // The variant holds exactly the four subscribed types, so this overload set has to cover them all
 // and nothing else: leaving one out, or handling a type not subscribed to, does not compile.
-vio::task_t<void> pointer(gui::window_t &window)
+vio::task_t<void> pointer(vui::window_t &window)
 {
-  auto events = window.subscribe<gui::pointer_move_event_t, gui::pointer_button_event_t, gui::scroll_event_t, gui::pointer_enter_event_t>();
+  auto events = window.subscribe<vui::pointer_move_event_t, vui::pointer_button_event_t, vui::scroll_event_t, vui::pointer_enter_event_t>();
   while (auto event = co_await events)
   {
     std::visit(overloaded{
-                 [](const gui::pointer_move_event_t &e) { std::println("pointer at {:.1f}, {:.1f}", e.position.x, e.position.y); },
-                 [](const gui::pointer_button_event_t &e) { std::println("{} button {} at {:.1f}, {:.1f}", button_name(e.button), e.pressed ? "down" : "up", e.position.x, e.position.y); },
-                 [](const gui::scroll_event_t &e) { std::println("scroll {:.2f}, {:.2f}", e.dx, e.dy); },
-                 [](const gui::pointer_enter_event_t &e) { std::println("pointer {}", e.entered ? "entered" : "left"); },
+                 [](const vui::pointer_move_event_t &e) { std::println("pointer at {:.1f}, {:.1f}", e.position.x, e.position.y); },
+                 [](const vui::pointer_button_event_t &e) { std::println("{} button {} at {:.1f}, {:.1f}", button_name(e.button), e.pressed ? "down" : "up", e.position.x, e.position.y); },
+                 [](const vui::scroll_event_t &e) { std::println("scroll {:.2f}, {:.2f}", e.dx, e.dy); },
+                 [](const vui::pointer_enter_event_t &e) { std::println("pointer {}", e.entered ? "entered" : "left"); },
                },
                *event);
   }
 }
 
-vio::task_t<void> focus(gui::window_t &window)
+vio::task_t<void> focus(vui::window_t &window)
 {
-  auto changes = window.subscribe<gui::focus_event_t>();
+  auto changes = window.subscribe<vui::focus_event_t>();
   while (auto change = co_await changes)
     std::println("focus {}", change->focused ? "gained" : "lost");
 }
 
-vio::task_t<void> draw(gui::window_t &window, shared_t &shared)
+vio::task_t<void> draw(vui::window_t &window, shared_t &shared)
 {
-  auto context = gui::gl_context_t::create(window);
+  auto context = vui::gl_context_t::create(window);
   if (!context)
   {
     std::println(stderr, "no OpenGL: {}", context.error().msg);
@@ -153,7 +153,7 @@ int main(int argc, char **argv)
 {
   const auto limit = std::chrono::milliseconds(argc > 1 ? std::atoi(argv[1]) : 0);
   return vio::run([limit](vio::event_loop_t &loop) -> vio::task_t<int> {
-    auto display = gui::display_t::open(loop);
+    auto display = vui::display_t::open(loop);
     if (!display)
     {
       std::println(stderr, "no display: {}", display.error().msg);
@@ -161,7 +161,7 @@ int main(int argc, char **argv)
     }
     std::println("Type, click and scroll. Ctrl+C copies, Ctrl+V pastes, 0-9 change the cursor, Escape quits.");
     {
-      auto window = gui::window_t::create(*display, {.title = "input echo", .size = {480, 320}});
+      auto window = vui::window_t::create(*display, {.title = "input echo", .size = {480, 320}});
       if (!window)
         co_return 1;
       shared_t shared;
@@ -169,8 +169,8 @@ int main(int argc, char **argv)
       auto typing = keyboard(*display, *window, shared);
       auto pointing = pointer(*window);
       auto focusing = focus(*window);
-      auto closing = [](gui::window_t &window, shared_t &shared) -> vio::task_t<void> {
-        auto requests = window.subscribe<gui::close_request_t>();
+      auto closing = [](vui::window_t &window, shared_t &shared) -> vio::task_t<void> {
+        auto requests = window.subscribe<vui::close_request_t>();
         if (co_await requests)
           shared.done = true;
       }(*window, shared);

@@ -29,8 +29,8 @@ Copyright (c) 2026 Jørgen Lind
 #include <vector>
 
 #include <vio/event_loop.h>
-#include <vio/gui/context.h>
-#include <vio/gui/gui.h>
+#include <vui/context.h>
+#include <vui/vui.h>
 #include <vio/operation/sleep.h>
 #include <vio/task.h>
 
@@ -40,25 +40,25 @@ Copyright (c) 2026 Jørgen Lind
 #import <QuartzCore/CAMetalLayer.h>
 
 using namespace std::chrono_literals;
-namespace gui = vio::gui;
+namespace gui = vui;
 
 namespace
 {
-gui::display_t open_cocoa(vio::event_loop_t &loop)
+vui::display_t open_cocoa(vio::event_loop_t &loop)
 {
-  auto display = gui::display_t::open(loop);
+  auto display = vui::display_t::open(loop);
   if (!display)
     FAIL("display: " << display.error().msg);
   CHECK(std::string(display->backend_name()) == "cocoa");
   return std::move(*display);
 }
 
-NSWindow *ns_window_of(gui::window_t &window)
+NSWindow *ns_window_of(vui::window_t &window)
 {
   return (__bridge NSWindow *)window.native().handle;
 }
 
-NSView *ns_view_of(gui::window_t &window)
+NSView *ns_view_of(vui::window_t &window)
 {
   return (__bridge NSView *)window.native().view;
 }
@@ -70,11 +70,11 @@ TEST_CASE("cocoa: a shown window delivers its first frame at the size asked for"
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_cocoa(loop);
     {
-      auto window = gui::window_t::create(display, {.title = "first frame", .size = {320, 200}});
+      auto window = vui::window_t::create(display, {.title = "first frame", .size = {320, 200}});
       REQUIRE(window.has_value());
       auto frame = co_await window->frame();
       REQUIRE(frame.has_value());
-      CHECK(frame->size == gui::extent_t{320, 200});
+      CHECK(frame->size == vui::extent_t{320, 200});
       CHECK(frame->framebuffer.width == static_cast<int>(320 * frame->scale));
     }
     loop.stop();
@@ -87,15 +87,15 @@ TEST_CASE("cocoa: a size change comes back as a resize")
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_cocoa(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {200, 200}});
+      auto window = vui::window_t::create(display, {.size = {200, 200}});
       co_await window->frame();
-      auto sizes = window->subscribe<gui::resize_event_t>();
+      auto sizes = window->subscribe<vui::resize_event_t>();
       REQUIRE(window->set_size({410, 270}).has_value());
       for (;;)
       {
         auto resized = co_await sizes;
         REQUIRE(resized.has_value());
-        if (resized->size == gui::extent_t{410, 270})
+        if (resized->size == vui::extent_t{410, 270})
           break;
       }
     }
@@ -109,9 +109,9 @@ TEST_CASE("cocoa: the close button is a close request and the window stays open"
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_cocoa(loop);
     {
-      auto window = gui::window_t::create(display);
+      auto window = vui::window_t::create(display);
       co_await window->frame();
-      auto requests = window->subscribe<gui::close_request_t>();
+      auto requests = window->subscribe<vui::close_request_t>();
       [ns_window_of(*window) performClose:nil];
       auto request = co_await requests;
       CHECK(request.has_value());
@@ -124,13 +124,13 @@ TEST_CASE("cocoa: the close button is a close request and the window stays open"
 TEST_CASE("cocoa: a key down becomes a key event and its text")
 {
   vio::event_loop_t loop;
-  std::vector<gui::window_event_t> events;
-  run_gui_test(loop, [](vio::event_loop_t &loop, std::vector<gui::window_event_t> &events) -> vio::task_t<void> {
+  std::vector<vui::window_event_t> events;
+  run_gui_test(loop, [](vio::event_loop_t &loop, std::vector<vui::window_event_t> &events) -> vio::task_t<void> {
     auto display = open_cocoa(loop);
     {
-      auto window = gui::window_t::create(display);
+      auto window = vui::window_t::create(display);
       co_await window->frame();
-      auto keys = window->subscribe<gui::key_event_t, gui::text_event_t>();
+      auto keys = window->subscribe<vui::key_event_t, vui::text_event_t>();
       NSEvent *down = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:[ns_window_of(*window) windowNumber] context:nil characters:@"q" charactersIgnoringModifiers:@"q" isARepeat:NO keyCode:0x0C];
       [ns_view_of(*window) keyDown:down];
       while (events.size() < 2)
@@ -143,8 +143,8 @@ TEST_CASE("cocoa: a key down becomes a key event and its text")
     loop.stop();
   }(loop, events));
   REQUIRE(events.size() == 2);
-  CHECK(std::get<gui::key_event_t>(events[0]).key == gui::key_t::q);
-  CHECK(std::get<gui::text_event_t>(events[1]).text == "q");
+  CHECK(std::get<vui::key_event_t>(events[0]).key == vui::key_t::q);
+  CHECK(std::get<vui::text_event_t>(events[1]).text == "q");
 }
 
 TEST_CASE("cocoa: the loop keeps turning while the run loop tracks")
@@ -154,7 +154,7 @@ TEST_CASE("cocoa: the loop keeps turning while the run loop tracks")
   run_gui_test(loop, [](vio::event_loop_t &loop, int &ticks_inside) -> vio::task_t<void> {
     auto display = open_cocoa(loop);
     {
-      auto window = gui::window_t::create(display);
+      auto window = vui::window_t::create(display);
       co_await window->frame();
       int ticks = 0;
       bool stop_ticking = false;
@@ -200,20 +200,20 @@ TEST_CASE("cocoa: a Metal layer backs the view and follows its size")
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_cocoa(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {300, 200}});
-      auto layer = gui::metal::create_layer(*window);
+      auto window = vui::window_t::create(display, {.size = {300, 200}});
+      auto layer = vui::metal::create_layer(*window);
       REQUIRE(layer.has_value());
       auto *metal = (__bridge CAMetalLayer *)*layer;
       const bool backed = [ns_view_of(*window) layer] == metal;
       CHECK(backed);
       auto frame = co_await window->frame();
       CHECK(metal.drawableSize.width == frame->framebuffer.width);
-      auto sizes = window->subscribe<gui::resize_event_t>();
+      auto sizes = window->subscribe<vui::resize_event_t>();
       REQUIRE(window->set_size({400, 250}).has_value());
       for (;;)
       {
         auto resized = co_await sizes;
-        if (resized->size == gui::extent_t{400, 250})
+        if (resized->size == vui::extent_t{400, 250})
         {
           CHECK(metal.drawableSize.width == resized->framebuffer.width);
           break;
@@ -231,8 +231,8 @@ TEST_CASE("cocoa: a GL context draws into the window")
   run_gui_test(loop, [](vio::event_loop_t &loop, std::array<std::uint8_t, 4> &pixel) -> vio::task_t<void> {
     auto display = open_cocoa(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {64, 48}});
-      auto context = gui::gl_context_t::create(*window, {.major = 3, .minor = 2});
+      auto window = vui::window_t::create(display, {.size = {64, 48}});
+      auto context = vui::gl_context_t::create(*window, {.major = 3, .minor = 2});
       if (!context)
         FAIL("gl: " << context.error().msg);
       auto clear_color = context->proc<void (*)(float, float, float, float)>("glClearColor");

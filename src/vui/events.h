@@ -26,7 +26,7 @@ Copyright (c) 2026 Jørgen Lind
 #include <string>
 #include <variant>
 
-namespace vio::gui
+namespace vui
 {
 struct extent_t
 {
@@ -188,4 +188,4 @@ enum class cursor_t : std::uint8_t
   wait,
   hidden
 };
-} // namespace vio::gui
+} // namespace vui

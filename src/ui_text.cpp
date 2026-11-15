@@ -36,7 +36,7 @@ Copyright (c) 2026 Jørgen Lind
 
 #include <hb.h>
 
-namespace vio::gui::ui
+namespace vui::ui
 {
 namespace detail
 {
@@ -717,4 +717,4 @@ std::uint32_t text_engine_t::nominal_glyph(const font_t &font, char32_t codepoin
   return glyph;
 }
 } // namespace detail
-} // namespace vio::gui::ui
+} // namespace vui::ui

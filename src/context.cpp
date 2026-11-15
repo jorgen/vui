@@ -23,10 +23,10 @@ Copyright (c) 2026 Jørgen Lind
 #include <cstring>
 #include <string_view>
 
-#include "vio/gui/backends.h"
-#include "vio/gui/context.h"
+#include "vui/backends.h"
+#include "vui/context.h"
 
-namespace vio::gui
+namespace vui
 {
 namespace detail
 {
@@ -38,7 +38,7 @@ std::expected<std::unique_ptr<gl_impl_t>, int> make_gl_context(window_impl_t &wi
 {
   switch (window.display.backend->platform())
   {
-#if defined(VIO_GUI_HAVE_X11) || defined(VIO_GUI_HAVE_WAYLAND)
+#if defined(VUI_HAVE_X11) || defined(VUI_HAVE_WAYLAND)
   case platform_t::x11:
   case platform_t::wayland:
     return make_egl_context(window, config);
@@ -52,7 +52,7 @@ std::expected<std::unique_ptr<gl_impl_t>, int> make_gl_context(window_impl_t &wi
     return make_cgl_context(window, config);
 #endif
   default:
-    return std::unexpected(errc::not_supported);
+    return std::unexpected(vio::errc::not_supported);
   }
 }
 
@@ -127,24 +127,24 @@ Function vk_proc(vulkan::get_instance_proc_addr_t get, void *instance, const cha
 } // namespace
 } // namespace detail
 
-std::expected<gl_context_t, error_t> gl_context_t::create(window_t &window, const gl_config_t &config)
+std::expected<gl_context_t, vio::error_t> gl_context_t::create(window_t &window, const gl_config_t &config)
 {
   if (!window)
-    return std::unexpected(make_error(errc::canceled));
+    return std::unexpected(vio::make_error(vio::errc::canceled));
   auto made = detail::make_gl_context(*window.impl(), config);
   if (!made)
-    return std::unexpected(make_error(made.error()));
+    return std::unexpected(vio::make_error(made.error()));
   gl_context_t context;
   context._impl = std::move(*made);
   return context;
 }
 
-std::expected<void, error_t> gl_context_t::make_current()
+std::expected<void, vio::error_t> gl_context_t::make_current()
 {
   if (!_impl)
-    return std::unexpected(make_error(errc::canceled));
+    return std::unexpected(vio::make_error(vio::errc::canceled));
   if (int result = _impl->make_current(); result < 0)
-    return std::unexpected(make_error(result));
+    return std::unexpected(vio::make_error(result));
   return {};
 }
 
@@ -154,21 +154,21 @@ void gl_context_t::release_current()
     _impl->release_current();
 }
 
-std::expected<void, error_t> gl_context_t::swap_buffers()
+std::expected<void, vio::error_t> gl_context_t::swap_buffers()
 {
   if (!_impl)
-    return std::unexpected(make_error(errc::canceled));
+    return std::unexpected(vio::make_error(vio::errc::canceled));
   if (int result = _impl->swap_buffers(); result < 0)
-    return std::unexpected(make_error(result));
+    return std::unexpected(vio::make_error(result));
   return {};
 }
 
-std::expected<void, error_t> gl_context_t::set_swap_interval(int interval)
+std::expected<void, vio::error_t> gl_context_t::set_swap_interval(int interval)
 {
   if (!_impl)
-    return std::unexpected(make_error(errc::canceled));
+    return std::unexpected(vio::make_error(vio::errc::canceled));
   if (int result = _impl->set_swap_interval(interval); result < 0)
-    return std::unexpected(make_error(result));
+    return std::unexpected(vio::make_error(result));
   return {};
 }
 
@@ -198,12 +198,12 @@ std::vector<std::intptr_t> gl_context_t::opencl_properties(void *platform) const
   return properties;
 }
 
-std::expected<std::array<std::uint8_t, 16>, error_t> gl_context_t::device_uuid() const
+std::expected<std::array<std::uint8_t, 16>, vio::error_t> gl_context_t::device_uuid() const
 {
   if (!_impl)
-    return std::unexpected(make_error(errc::canceled));
+    return std::unexpected(vio::make_error(vio::errc::canceled));
   if (int result = _impl->make_current(); result < 0)
-    return std::unexpected(make_error(result));
+    return std::unexpected(vio::make_error(result));
   using get_integer_t = void (*)(unsigned, int *);
   using get_string_i_t = const unsigned char *(*)(unsigned, unsigned);
   using get_string_t = const unsigned char *(*)(unsigned);
@@ -229,7 +229,7 @@ std::expected<std::array<std::uint8_t, 16>, error_t> gl_context_t::device_uuid()
     supported = all && std::string_view(reinterpret_cast<const char *>(all)).find("GL_EXT_memory_object") != std::string_view::npos;
   }
   if (!supported || !get_bytes)
-    return std::unexpected(make_error(errc::not_supported));
+    return std::unexpected(vio::make_error(vio::errc::not_supported));
   std::array<std::uint8_t, 16> uuid{};
   get_bytes(detail::gl_device_uuid_ext, 0, uuid.data());
   return uuid;
@@ -260,12 +260,12 @@ std::vector<const char *> required_instance_extensions(platform_t platform)
   return {};
 }
 
-std::expected<std::uint64_t, error_t> create_surface(window_t &window, void *instance, get_instance_proc_addr_t get_instance_proc_addr, const void *allocator)
+std::expected<std::uint64_t, vio::error_t> create_surface(window_t &window, void *instance, get_instance_proc_addr_t get_instance_proc_addr, const void *allocator)
 {
   if (!window)
-    return std::unexpected(make_error(errc::canceled));
+    return std::unexpected(vio::make_error(vio::errc::canceled));
   if (!instance || !get_instance_proc_addr)
-    return std::unexpected(make_error(errc::invalid_argument));
+    return std::unexpected(vio::make_error(vio::errc::invalid_argument));
   const auto native = window.native();
   std::uint64_t surface = 0;
   detail::vk_result_t result = -7;
@@ -275,7 +275,7 @@ std::expected<std::uint64_t, error_t> create_surface(window_t &window, void *ins
   {
     auto create = detail::vk_proc<detail::vk_create_surface_t>(get_instance_proc_addr, instance, "vkCreateXlibSurfaceKHR");
     if (!create)
-      return std::unexpected(make_error(errc::not_supported));
+      return std::unexpected(vio::make_error(vio::errc::not_supported));
     detail::vk_xlib_surface_info_t info;
     info.display = native.display;
     info.window = static_cast<unsigned long>(native.id);
@@ -286,7 +286,7 @@ std::expected<std::uint64_t, error_t> create_surface(window_t &window, void *ins
   {
     auto create = detail::vk_proc<detail::vk_create_surface_t>(get_instance_proc_addr, instance, "vkCreateWaylandSurfaceKHR");
     if (!create)
-      return std::unexpected(make_error(errc::not_supported));
+      return std::unexpected(vio::make_error(vio::errc::not_supported));
     detail::vk_wayland_surface_info_t info;
     info.display = native.display;
     info.surface = native.handle;
@@ -297,7 +297,7 @@ std::expected<std::uint64_t, error_t> create_surface(window_t &window, void *ins
   {
     auto create = detail::vk_proc<detail::vk_create_surface_t>(get_instance_proc_addr, instance, "vkCreateWin32SurfaceKHR");
     if (!create)
-      return std::unexpected(make_error(errc::not_supported));
+      return std::unexpected(vio::make_error(vio::errc::not_supported));
     detail::vk_win32_surface_info_t info;
     info.instance = native.display;
     info.window = native.handle;
@@ -308,7 +308,7 @@ std::expected<std::uint64_t, error_t> create_surface(window_t &window, void *ins
   {
     auto create = detail::vk_proc<detail::vk_create_surface_t>(get_instance_proc_addr, instance, "vkCreateMetalSurfaceEXT");
     if (!create)
-      return std::unexpected(make_error(errc::not_supported));
+      return std::unexpected(vio::make_error(vio::errc::not_supported));
     auto layer = metal::create_layer(window);
     if (!layer)
       return std::unexpected(layer.error());
@@ -319,20 +319,20 @@ std::expected<std::uint64_t, error_t> create_surface(window_t &window, void *ins
   }
   }
   if (result != 0)
-    return std::unexpected(make_error(errc::not_supported));
+    return std::unexpected(vio::make_error(vio::errc::not_supported));
   return surface;
 }
 
-std::expected<std::array<std::uint8_t, 16>, error_t> device_uuid(void *instance, void *physical_device, get_instance_proc_addr_t get_instance_proc_addr)
+std::expected<std::array<std::uint8_t, 16>, vio::error_t> device_uuid(void *instance, void *physical_device, get_instance_proc_addr_t get_instance_proc_addr)
 {
   if (!instance || !physical_device || !get_instance_proc_addr)
-    return std::unexpected(make_error(errc::invalid_argument));
+    return std::unexpected(vio::make_error(vio::errc::invalid_argument));
   using get_properties2_t = void (*)(void *, void *);
   auto get = detail::vk_proc<get_properties2_t>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceProperties2");
   if (!get)
     get = detail::vk_proc<get_properties2_t>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceProperties2KHR");
   if (!get)
-    return std::unexpected(make_error(errc::not_supported));
+    return std::unexpected(vio::make_error(vio::errc::not_supported));
   detail::vk_id_properties_t ids;
   detail::vk_properties2_t properties;
   properties.next = &ids;
@@ -346,9 +346,9 @@ std::expected<std::array<std::uint8_t, 16>, error_t> device_uuid(void *instance,
 #if !defined(__APPLE__)
 namespace metal
 {
-std::expected<void *, error_t> create_layer(window_t &)
+std::expected<void *, vio::error_t> create_layer(window_t &)
 {
-  return std::unexpected(make_error(errc::not_supported));
+  return std::unexpected(vio::make_error(vio::errc::not_supported));
 }
 } // namespace metal
 #endif
@@ -356,20 +356,20 @@ std::expected<void *, error_t> create_layer(window_t &)
 #if !defined(_WIN32)
 namespace d3d12
 {
-std::expected<void *, error_t> create_swap_chain(window_t &, void *, const swap_chain_config_t &)
+std::expected<void *, vio::error_t> create_swap_chain(window_t &, void *, const swap_chain_config_t &)
 {
-  return std::unexpected(make_error(errc::not_supported));
+  return std::unexpected(vio::make_error(vio::errc::not_supported));
 }
 
-std::expected<void, error_t> resize_swap_chain(void *, extent_t)
+std::expected<void, vio::error_t> resize_swap_chain(void *, extent_t)
 {
-  return std::unexpected(make_error(errc::not_supported));
+  return std::unexpected(vio::make_error(vio::errc::not_supported));
 }
 } // namespace d3d12
 
-std::expected<std::array<std::uint8_t, 8>, error_t> adapter_luid(window_t &)
+std::expected<std::array<std::uint8_t, 8>, vio::error_t> adapter_luid(window_t &)
 {
-  return std::unexpected(make_error(errc::not_supported));
+  return std::unexpected(vio::make_error(vio::errc::not_supported));
 }
 #endif
-} // namespace vio::gui
+} // namespace vui

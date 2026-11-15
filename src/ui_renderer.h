@@ -31,9 +31,9 @@ Copyright (c) 2026 Jørgen Lind
 #include <string>
 #include <vector>
 
-#include "vio/gui/ui/ui.h"
+#include "vui/ui/ui.h"
 
-namespace vio::gui::ui::detail
+namespace vui::ui::detail
 {
 class renderer_t
 {
@@ -64,4 +64,4 @@ inline std::optional<offscreen_image_t> render_offscreen_vulkan(const display_li
 {
   return render_offscreen_vulkan(std::span<const display_list_t>(&list, 1), why);
 }
-} // namespace vio::gui::ui::detail
+} // namespace vui::ui::detail

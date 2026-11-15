@@ -30,9 +30,9 @@ Copyright (c) 2026 Jørgen Lind
 #include <string_view>
 #include <vector>
 
-#include "vio/gui/ui/ui.h"
+#include "vui/ui/ui.h"
 
-namespace vio::gui::ui::detail
+namespace vui::ui::detail
 {
 // A shaped glyph: its id and pen position in pixels, y down. For tests.
 struct shaped_glyph_t
@@ -84,4 +84,4 @@ private:
   struct impl_t;
   std::unique_ptr<impl_t> _impl;
 };
-} // namespace vio::gui::ui::detail
+} // namespace vui::ui::detail

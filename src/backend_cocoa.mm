@@ -33,16 +33,16 @@ Copyright (c) 2026 Jørgen Lind
 #include <dlfcn.h>
 #include <poll.h>
 
-#include "vio/gui/backends.h"
-#include "vio/gui/context.h"
-#include "vio/gui/gui.h"
+#include "vui/backends.h"
+#include "vui/context.h"
+#include "vui/vui.h"
 #include "vio/host_loop.h"
 
 #import <Cocoa/Cocoa.h>
 #import <OpenGL/OpenGL.h>
 #import <QuartzCore/CAMetalLayer.h>
 
-namespace vio::gui::detail
+namespace vui::detail
 {
 class cocoa_window_t;
 class cocoa_thread_t;
@@ -51,7 +51,7 @@ class cocoa_thread_t;
 @interface VioView : NSView
 {
 @public
-  vio::gui::detail::cocoa_window_t *owner;
+  vui::detail::cocoa_window_t *owner;
   NSTrackingArea *tracking;
 }
 @end
@@ -59,7 +59,7 @@ class cocoa_thread_t;
 @interface VioWindowDelegate : NSObject <NSWindowDelegate>
 {
 @public
-  vio::gui::detail::cocoa_window_t *owner;
+  vui::detail::cocoa_window_t *owner;
 }
 @end
 
@@ -77,7 +77,7 @@ class cocoa_thread_t;
 }
 @end
 
-namespace vio::gui::detail
+namespace vui::detail
 {
 namespace
 {
@@ -266,7 +266,7 @@ enum class wait_state_t
 class cocoa_thread_t final : public vio::host_wait_t
 {
 public:
-  explicit cocoa_thread_t(event_loop_t &loop)
+  explicit cocoa_thread_t(vio::event_loop_t &loop)
     : loop(loop)
   {
   }
@@ -295,20 +295,20 @@ public:
   int start()
   {
     if (![NSThread isMainThread])
-      return errc::not_supported;
+      return vio::errc::not_supported;
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     if (![[NSRunningApplication currentApplication] isFinishedLaunching])
       [NSApp finishLaunching];
     const auto handle = vio::loop_native_handle(loop);
     if (handle < 0)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     CFRunLoopAddCommonMode(CFRunLoopGetMain(), (__bridge CFStringRef)NSEventTrackingRunLoopMode);
     CFRunLoopAddCommonMode(CFRunLoopGetMain(), (__bridge CFStringRef)NSModalPanelRunLoopMode);
     CFFileDescriptorContext context{0, this, nullptr, nullptr, nullptr};
     _descriptor = CFFileDescriptorCreate(kCFAllocatorDefault, static_cast<int>(handle), false, &cocoa_thread_t::on_descriptor, &context);
     if (!_descriptor)
-      return errc::out_of_memory;
+      return vio::errc::out_of_memory;
     CFFileDescriptorEnableCallBacks(_descriptor, kCFFileDescriptorReadCallBack);
     _source = CFFileDescriptorCreateRunLoopSource(kCFAllocatorDefault, _descriptor, 0);
     CFRunLoopAddSource(CFRunLoopGetMain(), _source, kCFRunLoopCommonModes);
@@ -364,7 +364,7 @@ public:
     arm_timer();
   }
 
-  event_loop_t &loop;
+  vio::event_loop_t &loop;
   std::size_t displays = 0;
 
 private:
@@ -537,7 +537,7 @@ public:
     }
     else if (&thread->loop != impl.loop)
     {
-      return errc::busy;
+      return vio::errc::busy;
     }
     ++thread->displays;
     return 0;
@@ -629,7 +629,7 @@ int cocoa_window_t::create(const window_config_t &config)
     const NSRect content = NSMakeRect(0, 0, config.size.width, config.size.height);
     ns_window = [[VioWindow alloc] initWithContentRect:content styleMask:style backing:NSBackingStoreBuffered defer:NO];
     if (!ns_window)
-      return errc::out_of_memory;
+      return vio::errc::out_of_memory;
     [ns_window setReleasedWhenClosed:NO];
     view = [[VioView alloc] initWithFrame:content];
     view->owner = this;
@@ -726,7 +726,7 @@ void cocoa_window_t::set_title(std::string_view title)
 int cocoa_window_t::set_size(extent_t size)
 {
   if ([ns_window styleMask] & NSWindowStyleMaskFullScreen)
-    return errc::busy;
+    return vio::errc::busy;
   NSRect frame = [ns_window frame];
   const NSRect content = [ns_window contentRectForFrameRect:frame];
   const NSRect wanted = NSMakeRect(content.origin.x, content.origin.y + content.size.height - size.height, size.width, size.height);
@@ -867,7 +867,7 @@ public:
   int create(window_impl_t &window, const gl_config_t &config)
   {
     if (config.es)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     auto *backend = static_cast<cocoa_window_t *>(window.backend.get());
     std::vector<NSOpenGLPixelFormatAttribute> attributes = {NSOpenGLPFADoubleBuffer, NSOpenGLPFAOpenGLProfile};
     if (config.major >= 4 && config.core_profile)
@@ -882,10 +882,10 @@ public:
     attributes.push_back(0);
     NSOpenGLPixelFormat *format = [[NSOpenGLPixelFormat alloc] initWithAttributes:attributes.data()];
     if (!format)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     _context = [[NSOpenGLContext alloc] initWithFormat:format shareContext:nil];
     if (!_context)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     [backend->view setWantsBestResolutionOpenGLSurface:YES];
     if (config.transparent)
     {
@@ -905,7 +905,7 @@ public:
   int make_current() override
   {
     if (!_context)
-      return errc::canceled;
+      return vio::errc::canceled;
     if (_window && _window->framebuffer != _framebuffer)
     {
       _framebuffer = _window->framebuffer;
@@ -924,7 +924,7 @@ public:
   int swap_buffers() override
   {
     if (!_context)
-      return errc::canceled;
+      return vio::errc::canceled;
     [_context flushBuffer];
     return 0;
   }
@@ -938,7 +938,7 @@ public:
   int set_swap_interval(int interval) override
   {
     if (!_context)
-      return errc::canceled;
+      return vio::errc::canceled;
     GLint value = interval;
     [_context setValues:&value forParameter:NSOpenGLContextParameterSwapInterval];
     return 0;
@@ -987,28 +987,28 @@ std::expected<std::unique_ptr<gl_impl_t>, int> make_cgl_context(window_impl_t &w
     return std::unexpected(result);
   return context;
 }
-} // namespace vio::gui::detail
+} // namespace vui::detail
 
-namespace vio::gui::metal
+namespace vui::metal
 {
-std::expected<void *, error_t> create_layer(window_t &window)
+std::expected<void *, vio::error_t> create_layer(window_t &window)
 {
   if (!window)
-    return std::unexpected(make_error(errc::canceled));
+    return std::unexpected(vio::make_error(vio::errc::canceled));
   return detail::cocoa_metal_layer(*window.impl());
 }
-} // namespace vio::gui::metal
+} // namespace vui::metal
 
-using vio::gui::button_t;
-using vio::gui::focus_event_t;
-using vio::gui::key_event_t;
-using vio::gui::modifier_t;
-using vio::gui::point_t;
-using vio::gui::pointer_button_event_t;
-using vio::gui::pointer_enter_event_t;
-using vio::gui::pointer_move_event_t;
-using vio::gui::scroll_event_t;
-using vio::gui::text_event_t;
+using vui::button_t;
+using vui::focus_event_t;
+using vui::key_event_t;
+using vui::modifier_t;
+using vui::point_t;
+using vui::pointer_button_event_t;
+using vui::pointer_enter_event_t;
+using vui::pointer_move_event_t;
+using vui::scroll_event_t;
+using vui::text_event_t;
 
 @implementation VioView
 
@@ -1101,7 +1101,7 @@ using vio::gui::text_event_t;
 - (void)mouseMoved:(NSEvent *)event
 {
   if (owner)
-    owner->window.on_input(pointer_move_event_t{[self pointFor:event], vio::gui::detail::translate_flags([event modifierFlags])});
+    owner->window.on_input(pointer_move_event_t{[self pointFor:event], vui::detail::translate_flags([event modifierFlags])});
 }
 
 - (void)mouseDragged:(NSEvent *)event
@@ -1122,7 +1122,7 @@ using vio::gui::text_event_t;
 - (void)button:(button_t)button pressed:(bool)pressed event:(NSEvent *)event
 {
   if (owner)
-    owner->window.on_input(pointer_button_event_t{button, pressed, [self pointFor:event], vio::gui::detail::translate_flags([event modifierFlags])});
+    owner->window.on_input(pointer_button_event_t{button, pressed, [self pointFor:event], vui::detail::translate_flags([event modifierFlags])});
 }
 
 - (button_t)otherButton:(NSEvent *)event
@@ -1178,14 +1178,14 @@ using vio::gui::text_event_t;
     dy *= 0.1;
   }
   if (dx != 0 || dy != 0)
-    owner->window.on_input(scroll_event_t{dx, dy, [self pointFor:event], vio::gui::detail::translate_flags([event modifierFlags])});
+    owner->window.on_input(scroll_event_t{dx, dy, [self pointFor:event], vui::detail::translate_flags([event modifierFlags])});
 }
 
 - (void)keyDown:(NSEvent *)event
 {
   if (!owner)
     return;
-  key_event_t key{vio::gui::detail::translate_key([event keyCode]), [event keyCode], vio::gui::detail::translate_flags([event modifierFlags]), true, static_cast<bool>([event isARepeat])};
+  key_event_t key{vui::detail::translate_key([event keyCode]), [event keyCode], vui::detail::translate_flags([event modifierFlags]), true, static_cast<bool>([event isARepeat])};
   owner->window.on_input(key);
   NSString *characters = [event characters];
   std::string text;
@@ -1205,7 +1205,7 @@ using vio::gui::text_event_t;
 {
   if (!owner)
     return;
-  key_event_t key{vio::gui::detail::translate_key([event keyCode]), [event keyCode], vio::gui::detail::translate_flags([event modifierFlags]), false, false};
+  key_event_t key{vui::detail::translate_key([event keyCode]), [event keyCode], vui::detail::translate_flags([event modifierFlags]), false, false};
   owner->window.on_input(key);
 }
 
@@ -1213,12 +1213,12 @@ using vio::gui::text_event_t;
 {
   if (!owner)
     return;
-  const auto key = vio::gui::detail::translate_key([event keyCode]);
-  const NSEventModifierFlags flag = vio::gui::detail::flag_for(key);
+  const auto key = vui::detail::translate_key([event keyCode]);
+  const NSEventModifierFlags flag = vui::detail::flag_for(key);
   if (!flag)
     return;
   const bool pressed = ([event modifierFlags] & flag) != 0;
-  owner->window.on_input(key_event_t{key, [event keyCode], vio::gui::detail::translate_flags([event modifierFlags]), pressed, false});
+  owner->window.on_input(key_event_t{key, [event keyCode], vui::detail::translate_flags([event modifierFlags]), pressed, false});
 }
 
 @end

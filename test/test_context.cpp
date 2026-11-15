@@ -20,7 +20,7 @@ Copyright (c) 2026 Jørgen Lind
   THE SOFTWARE.
 */
 
-#if defined(VIO_GUI_HAVE_X11) || defined(VIO_GUI_HAVE_WAYLAND)
+#if defined(VUI_HAVE_X11) || defined(VUI_HAVE_WAYLAND)
 
 #include <doctest/doctest.h>
 
@@ -33,13 +33,13 @@ Copyright (c) 2026 Jørgen Lind
 #include <dlfcn.h>
 
 #include <vio/event_loop.h>
-#include <vio/gui/context.h>
-#include <vio/gui/gui.h>
+#include <vui/context.h>
+#include <vui/vui.h>
 #include <vio/task.h>
 
 #include "gui_test_helpers.h"
 
-namespace gui = vio::gui;
+namespace gui = vui;
 
 namespace
 {
@@ -49,7 +49,7 @@ std::vector<std::string> linux_backends()
   vio::event_loop_t loop;
   for (const char *name : {"x11", "wayland"})
   {
-    auto display = gui::display_t::open(loop, {.backend = name});
+    auto display = vui::display_t::open(loop, {.backend = name});
     if (display)
       found.emplace_back(name);
   }
@@ -66,7 +66,7 @@ struct gl_functions_t
   void (*finish)();
   void (*viewport)(int, int, int, int);
 
-  explicit gl_functions_t(const gui::gl_context_t &context)
+  explicit gl_functions_t(const vui::gl_context_t &context)
     : clear_color(context.proc<decltype(clear_color)>("glClearColor"))
     , clear(context.proc<decltype(clear)>("glClear"))
     , read_pixels(context.proc<decltype(read_pixels)>("glReadPixels"))
@@ -89,12 +89,12 @@ TEST_CASE("gl: a context draws into the window on every Linux backend")
     vio::event_loop_t loop;
     std::vector<std::array<std::uint8_t, 4>> pixels;
     run_gui_test(loop, [](vio::event_loop_t &loop, std::string backend, std::vector<std::array<std::uint8_t, 4>> &pixels) -> vio::task_t<void> {
-      auto display = gui::display_t::open(loop, {.backend = backend});
+      auto display = vui::display_t::open(loop, {.backend = backend});
       REQUIRE(display.has_value());
       {
-        auto window = gui::window_t::create(*display, {.title = "gl", .size = {64, 48}});
+        auto window = vui::window_t::create(*display, {.title = "gl", .size = {64, 48}});
         REQUIRE(window.has_value());
-        auto context = gui::gl_context_t::create(*window, {.major = 3, .minor = 3});
+        auto context = vui::gl_context_t::create(*window, {.major = 3, .minor = 3});
         if (!context)
           FAIL("gl context: " << context.error().msg);
         gl_functions_t gl(*context);
@@ -131,12 +131,12 @@ TEST_CASE("gl: closing the window releases the context and later calls are refus
     CAPTURE(backend);
     vio::event_loop_t loop;
     run_gui_test(loop, [](vio::event_loop_t &loop, std::string backend) -> vio::task_t<void> {
-      auto display = gui::display_t::open(loop, {.backend = backend});
+      auto display = vui::display_t::open(loop, {.backend = backend});
       if (!display)
         FAIL("display: " << display.error().msg);
       {
-        auto window = gui::window_t::create(*display);
-        auto context = gui::gl_context_t::create(*window);
+        auto window = vui::window_t::create(*display);
+        auto context = vui::gl_context_t::create(*window);
         REQUIRE(context.has_value());
         co_await window->frame();
         REQUIRE(context->make_current().has_value());
@@ -159,12 +159,12 @@ TEST_CASE("gl: OpenCL sharing properties name the context and its EGL display")
     CAPTURE(backend);
     vio::event_loop_t loop;
     run_gui_test(loop, [](vio::event_loop_t &loop, std::string backend) -> vio::task_t<void> {
-      auto display = gui::display_t::open(loop, {.backend = backend});
+      auto display = vui::display_t::open(loop, {.backend = backend});
       if (!display)
         FAIL("display: " << display.error().msg);
       {
-        auto window = gui::window_t::create(*display);
-        auto context = gui::gl_context_t::create(*window);
+        auto window = vui::window_t::create(*display);
+        auto context = vui::gl_context_t::create(*window);
         REQUIRE(context.has_value());
         int platform = 0;
         auto properties = context->opencl_properties(&platform);
@@ -205,12 +205,12 @@ TEST_CASE("vulkan: a surface made for the window can present from the device")
     CAPTURE(backend);
     vio::event_loop_t loop;
     run_gui_test(loop, [](vio::event_loop_t &loop, std::string backend, PFN_vkGetInstanceProcAddr gipa, PFN_vkCreateInstance create_instance) -> vio::task_t<void> {
-      auto display = gui::display_t::open(loop, {.backend = backend});
+      auto display = vui::display_t::open(loop, {.backend = backend});
       if (!display)
         FAIL("display: " << display.error().msg);
       {
-        auto window = gui::window_t::create(*display, {.size = {96, 64}});
-        auto extensions = gui::vulkan::required_instance_extensions(*display);
+        auto window = vui::window_t::create(*display, {.size = {96, 64}});
+        auto extensions = vui::vulkan::required_instance_extensions(*display);
         REQUIRE(extensions.size() == 2);
         VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         application.apiVersion = VK_API_VERSION_1_1;
@@ -227,7 +227,7 @@ TEST_CASE("vulkan: a surface made for the window can present from the device")
         auto supported = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceSupportKHR>(proc("vkGetPhysicalDeviceSurfaceSupportKHR"));
         auto capabilities = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR>(proc("vkGetPhysicalDeviceSurfaceCapabilitiesKHR"));
 
-        auto surface = gui::vulkan::create_surface(*window, instance, reinterpret_cast<gui::vulkan::get_instance_proc_addr_t>(gipa));
+        auto surface = vui::vulkan::create_surface(*window, instance, reinterpret_cast<vui::vulkan::get_instance_proc_addr_t>(gipa));
         if (!surface)
           FAIL("surface: " << surface.error().msg);
         auto handle = reinterpret_cast<VkSurfaceKHR>(*surface);
@@ -242,7 +242,7 @@ TEST_CASE("vulkan: a surface made for the window can present from the device")
         VkSurfaceCapabilitiesKHR caps{};
         REQUIRE(capabilities(devices[0], handle, &caps) == VK_SUCCESS);
         CHECK(caps.maxImageExtent.width >= 96);
-        auto uuid = gui::vulkan::device_uuid(instance, devices[0], reinterpret_cast<gui::vulkan::get_instance_proc_addr_t>(gipa));
+        auto uuid = vui::vulkan::device_uuid(instance, devices[0], reinterpret_cast<vui::vulkan::get_instance_proc_addr_t>(gipa));
         REQUIRE(uuid.has_value());
         CHECK(*uuid != std::array<std::uint8_t, 16>{});
         destroy_surface(instance, handle, nullptr);

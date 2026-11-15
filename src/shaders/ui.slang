@@ -6,7 +6,7 @@
 // under one, for a filled plot (G41, G44); a heatmap is a grid of atlas values through viridis.
 //
 // The compiled SPIR-V is committed as ui_spirv.h (G25); `cmake --build <dir> --target
-// vio_gui_shaders` regenerates it, and needs slangc only then. The interface below -- attribute
+// vui_shaders` regenerates it, and needs slangc only then. The interface below -- attribute
 // locations, the push constant block and its offsets -- is what src/ui_vulkan.cpp binds, so a change
 // here is a change there.
 

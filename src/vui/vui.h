@@ -29,10 +29,10 @@ Copyright (c) 2026 Jørgen Lind
 
 #include <vio/event_loop.h>
 
-#include "vio/gui/detail/core.h"
-#include "vio/gui/events.h"
+#include "vui/detail/core.h"
+#include "vui/events.h"
 
-namespace vio::gui
+namespace vui
 {
 class window_t;
 
@@ -60,10 +60,10 @@ public:
     handle = continuation;
     _display->add_clipboard_waiter(*this);
   }
-  std::expected<std::string, error_t> await_resume()
+  std::expected<std::string, vio::error_t> await_resume()
   {
     if (error)
-      return std::unexpected(make_error(error));
+      return std::unexpected(vio::make_error(error));
     return std::move(*value);
   }
 
@@ -79,7 +79,7 @@ public:
   display_t &operator=(display_t &&) noexcept = default;
   ~display_t() = default;
 
-  static std::expected<display_t, error_t> open(event_loop_t &loop, const display_config_t &config = {});
+  static std::expected<display_t, vio::error_t> open(vio::event_loop_t &loop, const display_config_t &config = {});
 
   [[nodiscard]] explicit operator bool() const noexcept
   {
@@ -191,7 +191,7 @@ public:
   window_t &operator=(window_t &&) noexcept = default;
   ~window_t() = default;
 
-  static std::expected<window_t, error_t> create(display_t &display, const window_config_t &config = {});
+  static std::expected<window_t, vio::error_t> create(display_t &display, const window_config_t &config = {});
 
   [[nodiscard]] explicit operator bool() const noexcept
   {
@@ -215,9 +215,9 @@ public:
   }
 
   void set_title(std::string_view title);
-  std::expected<void, error_t> set_size(extent_t size);
-  std::expected<void, error_t> set_position(point_t position);
-  [[nodiscard]] std::expected<point_t, error_t> position() const;
+  std::expected<void, vio::error_t> set_size(extent_t size);
+  std::expected<void, vio::error_t> set_position(point_t position);
+  [[nodiscard]] std::expected<point_t, vio::error_t> position() const;
   void set_size_limits(extent_t min_size, extent_t max_size);
   void show();
   void hide();
@@ -258,4 +258,4 @@ public:
 private:
   std::unique_ptr<detail::window_impl_t> _impl;
 };
-} // namespace vio::gui
+} // namespace vui

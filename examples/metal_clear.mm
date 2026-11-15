@@ -25,20 +25,20 @@ Copyright (c) 2026 Jørgen Lind
 #include <cstdlib>
 #include <print>
 
-#include <vio/gui/context.h>
-#include <vio/gui/gui.h>
+#include <vui/context.h>
+#include <vui/vui.h>
 #include <vio/run.h>
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
-namespace gui = vio::gui;
+namespace gui = vui;
 
 int main(int argc, char **argv)
 {
   const std::uint64_t frame_limit = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 0;
   return vio::run([frame_limit](vio::event_loop_t &loop) -> vio::task_t<int> {
-    auto display = gui::display_t::open(loop);
+    auto display = vui::display_t::open(loop);
     if (!display)
     {
       std::println(stderr, "no display: {}", display.error().msg);
@@ -46,18 +46,18 @@ int main(int argc, char **argv)
     }
     int status = 0;
     {
-      auto window = gui::window_t::create(*display, {.title = "metal clear", .size = {640, 400}});
+      auto window = vui::window_t::create(*display, {.title = "metal clear", .size = {640, 400}});
       if (!window)
         co_return 1;
       bool close = false;
-      auto closing = [](gui::window_t &window, bool &close) -> vio::task_t<void> {
-        auto requests = window.subscribe<gui::close_request_t>();
+      auto closing = [](vui::window_t &window, bool &close) -> vio::task_t<void> {
+        auto requests = window.subscribe<vui::close_request_t>();
         if (co_await requests)
           close = true;
       }(*window, close);
 
       id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-      auto layer_pointer = gui::metal::create_layer(*window);
+      auto layer_pointer = vui::metal::create_layer(*window);
       if (!device || !layer_pointer)
       {
         std::println(stderr, "no Metal device");

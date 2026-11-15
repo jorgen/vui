@@ -58,9 +58,9 @@ Copyright (c) 2026 Jørgen Lind
 #include <string>
 #include <vector>
 
-#include "vio/gui/ui/ui.h"
+#include "vui/ui/ui.h"
 
-namespace vio::gui::ui
+namespace vui::ui
 {
 class checkbox_t;
 class combobox_t;
@@ -211,4 +211,4 @@ private:
   int _highlight = -1;
   mutable std::optional<int> _asked;
 };
-} // namespace vio::gui::ui
+} // namespace vui::ui

@@ -20,7 +20,7 @@ Copyright (c) 2026 Jørgen Lind
   THE SOFTWARE.
 */
 
-#if defined(VIO_GUI_HAVE_WAYLAND)
+#if defined(VUI_HAVE_WAYLAND)
 
 #include <doctest/doctest.h>
 
@@ -32,7 +32,7 @@ Copyright (c) 2026 Jørgen Lind
 #include <unistd.h>
 
 #include <vio/event_loop.h>
-#include <vio/gui/gui.h>
+#include <vui/vui.h>
 #include <vio/operation/sleep.h>
 #include <vio/task.h>
 
@@ -41,7 +41,7 @@ Copyright (c) 2026 Jørgen Lind
 #include <wayland-client.h>
 
 using namespace std::chrono_literals;
-namespace gui = vio::gui;
+namespace gui = vui;
 
 namespace
 {
@@ -54,10 +54,10 @@ bool wayland_available()
   return true;
 }
 
-gui::display_t open_wayland(vio::event_loop_t &loop, gui::display_config_t config = {})
+vui::display_t open_wayland(vio::event_loop_t &loop, vui::display_config_t config = {})
 {
   config.backend = "wayland";
-  auto display = gui::display_t::open(loop, config);
+  auto display = vui::display_t::open(loop, config);
   REQUIRE(display.has_value());
   CHECK(std::string(display->backend_name()) == "wayland");
   return std::move(*display);
@@ -79,7 +79,7 @@ public:
     wl_registry_destroy(_registry);
   }
 
-  void paint(wl_surface *surface, gui::extent_t size, std::uint32_t colour)
+  void paint(wl_surface *surface, vui::extent_t size, std::uint32_t colour)
   {
     const int stride = size.width * 4;
     const int bytes = stride * size.height;
@@ -126,7 +126,7 @@ TEST_CASE("wayland: a configured window delivers frames paced by the compositor"
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_wayland(loop);
     {
-      auto window = gui::window_t::create(display, {.title = "frames", .size = {240, 160}});
+      auto window = vui::window_t::create(display, {.title = "frames", .size = {240, 160}});
       REQUIRE(window.has_value());
       shm_painter_t painter(static_cast<wl_display *>(display.native_display()));
       auto *surface = static_cast<wl_surface *>(window->native().handle);
@@ -137,7 +137,7 @@ TEST_CASE("wayland: a configured window delivers frames paced by the compositor"
         REQUIRE(frame.has_value());
         CHECK(frame->number > last);
         last = frame->number;
-        CHECK(frame->size == gui::extent_t{240, 160});
+        CHECK(frame->size == vui::extent_t{240, 160});
         CHECK(frame->framebuffer.width == 240 * static_cast<int>(frame->scale));
         painter.paint(surface, frame->framebuffer, 0xff2040u + static_cast<std::uint32_t>(i));
       }
@@ -155,15 +155,15 @@ TEST_CASE("wayland: a size the client chooses comes back as a resize")
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_wayland(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {200, 120}});
+      auto window = vui::window_t::create(display, {.size = {200, 120}});
       co_await window->frame();
-      auto sizes = window->subscribe<gui::resize_event_t>();
+      auto sizes = window->subscribe<vui::resize_event_t>();
       REQUIRE(window->set_size({330, 210}).has_value());
       for (;;)
       {
         auto resized = co_await sizes;
         REQUIRE(resized.has_value());
-        if (resized->size == gui::extent_t{330, 210})
+        if (resized->size == vui::extent_t{330, 210})
           break;
       }
       CHECK(!window->set_position({10, 10}).has_value());
@@ -180,7 +180,7 @@ TEST_CASE("wayland: hiding unmaps the window and showing configures it again")
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_wayland(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {100, 100}});
+      auto window = vui::window_t::create(display, {.size = {100, 100}});
       co_await window->frame();
       window->hide();
       CHECK(!window->visible());

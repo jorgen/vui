@@ -37,8 +37,8 @@ Copyright (c) 2026 Jørgen Lind
 #include <vector>
 
 #include <vio/event_loop.h>
-#include <vio/gui/context.h>
-#include <vio/gui/gui.h>
+#include <vui/context.h>
+#include <vui/vui.h>
 #include <vio/operation/sleep.h>
 #include <vio/task.h>
 
@@ -50,19 +50,19 @@ Copyright (c) 2026 Jørgen Lind
 #include <dxgi1_6.h>
 
 using namespace std::chrono_literals;
-namespace gui = vio::gui;
+namespace gui = vui;
 
 namespace
 {
-gui::display_t open_win32(vio::event_loop_t &loop)
+vui::display_t open_win32(vio::event_loop_t &loop)
 {
-  auto display = gui::display_t::open(loop);
+  auto display = vui::display_t::open(loop);
   REQUIRE(display.has_value());
   CHECK(std::string(display->backend_name()) == "win32");
   return std::move(*display);
 }
 
-HWND hwnd_of(gui::window_t &window)
+HWND hwnd_of(vui::window_t &window)
 {
   return static_cast<HWND>(window.native().handle);
 }
@@ -74,12 +74,12 @@ TEST_CASE("win32: a shown window delivers its first frame at the size asked for"
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_win32(loop);
     {
-      auto window = gui::window_t::create(display, {.title = "first frame", .size = {320, 200}});
+      auto window = vui::window_t::create(display, {.title = "first frame", .size = {320, 200}});
       REQUIRE(window.has_value());
       auto frame = co_await window->frame();
       REQUIRE(frame.has_value());
       CHECK(frame->framebuffer.width > 0);
-      CHECK(window->native().platform == gui::platform_t::win32);
+      CHECK(window->native().platform == vui::platform_t::win32);
     }
     loop.stop();
   }(loop));
@@ -91,14 +91,14 @@ TEST_CASE("win32: a size change comes back as a resize")
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_win32(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {200, 200}});
+      auto window = vui::window_t::create(display, {.size = {200, 200}});
       co_await window->frame();
       const auto scale = window->scale();
-      auto sizes = window->subscribe<gui::resize_event_t>();
+      auto sizes = window->subscribe<vui::resize_event_t>();
       REQUIRE(window->set_size({410, 270}).has_value());
       auto resized = co_await sizes;
       REQUIRE(resized.has_value());
-      CHECK(resized->size == gui::extent_t{410, 270});
+      CHECK(resized->size == vui::extent_t{410, 270});
       CHECK(resized->scale == scale);
     }
     loop.stop();
@@ -111,9 +111,9 @@ TEST_CASE("win32: WM_CLOSE is a close request and the window stays open")
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_win32(loop);
     {
-      auto window = gui::window_t::create(display);
+      auto window = vui::window_t::create(display);
       co_await window->frame();
-      auto requests = window->subscribe<gui::close_request_t>();
+      auto requests = window->subscribe<vui::close_request_t>();
       PostMessageW(hwnd_of(*window), WM_CLOSE, 0, 0);
       auto request = co_await requests;
       CHECK(request.has_value());
@@ -126,13 +126,13 @@ TEST_CASE("win32: WM_CLOSE is a close request and the window stays open")
 TEST_CASE("win32: key and character messages become key and text events")
 {
   vio::event_loop_t loop;
-  std::vector<gui::window_event_t> events;
-  run_gui_test(loop, [](vio::event_loop_t &loop, std::vector<gui::window_event_t> &events) -> vio::task_t<void> {
+  std::vector<vui::window_event_t> events;
+  run_gui_test(loop, [](vio::event_loop_t &loop, std::vector<vui::window_event_t> &events) -> vio::task_t<void> {
     auto display = open_win32(loop);
     {
-      auto window = gui::window_t::create(display);
+      auto window = vui::window_t::create(display);
       co_await window->frame();
-      auto keys = window->subscribe<gui::key_event_t, gui::text_event_t>();
+      auto keys = window->subscribe<vui::key_event_t, vui::text_event_t>();
       const HWND hwnd = hwnd_of(*window);
       PostMessageW(hwnd, WM_KEYDOWN, 'Q', 0x00100001);
       PostMessageW(hwnd, WM_CHAR, 0xd83d, 0);
@@ -148,24 +148,24 @@ TEST_CASE("win32: key and character messages become key and text events")
     loop.stop();
   }(loop, events));
   REQUIRE(events.size() == 3);
-  CHECK(std::get<gui::key_event_t>(events[0]).key == gui::key_t::q);
-  CHECK(std::get<gui::text_event_t>(events[1]).text == "\xf0\x9f\x98\x80");
-  CHECK(!std::get<gui::key_event_t>(events[2]).pressed);
+  CHECK(std::get<vui::key_event_t>(events[0]).key == vui::key_t::q);
+  CHECK(std::get<vui::text_event_t>(events[1]).text == "\xf0\x9f\x98\x80");
+  CHECK(!std::get<vui::key_event_t>(events[2]).pressed);
 }
 
 TEST_CASE("win32: key and text subscriptions each receive their own events from real messages")
 {
   vio::event_loop_t loop;
-  std::vector<gui::key_event_t> keys;
+  std::vector<vui::key_event_t> keys;
   std::vector<std::string> texts;
-  run_gui_test(loop, [](vio::event_loop_t &loop, std::vector<gui::key_event_t> &keys, std::vector<std::string> &texts) -> vio::task_t<void> {
+  run_gui_test(loop, [](vio::event_loop_t &loop, std::vector<vui::key_event_t> &keys, std::vector<std::string> &texts) -> vio::task_t<void> {
     auto display = open_win32(loop);
     {
-      auto window = gui::window_t::create(display);
+      auto window = vui::window_t::create(display);
       co_await window->frame();
-      auto key_events = window->subscribe<gui::key_event_t>();
-      auto text_events = window->subscribe<gui::text_event_t>();
-      auto key_reader = [](gui::subscription_t<gui::key_event_t> &events, std::vector<gui::key_event_t> &keys) -> vio::task_t<void> {
+      auto key_events = window->subscribe<vui::key_event_t>();
+      auto text_events = window->subscribe<vui::text_event_t>();
+      auto key_reader = [](vui::subscription_t<vui::key_event_t> &events, std::vector<vui::key_event_t> &keys) -> vio::task_t<void> {
         while (auto key = co_await events)
         {
           keys.push_back(*key);
@@ -173,7 +173,7 @@ TEST_CASE("win32: key and text subscriptions each receive their own events from 
             co_return;
         }
       }(key_events, keys);
-      auto text_reader = [](gui::subscription_t<gui::text_event_t> &events, std::vector<std::string> &texts) -> vio::task_t<void> {
+      auto text_reader = [](vui::subscription_t<vui::text_event_t> &events, std::vector<std::string> &texts) -> vio::task_t<void> {
         while (auto text = co_await events)
           texts.push_back(text->text);
       }(text_events, texts);
@@ -188,7 +188,7 @@ TEST_CASE("win32: key and text subscriptions each receive their own events from 
     loop.stop();
   }(loop, keys, texts));
   REQUIRE(keys.size() == 2);
-  CHECK(keys[0].key == gui::key_t::q);
+  CHECK(keys[0].key == vui::key_t::q);
   CHECK(keys[0].pressed);
   CHECK(!keys[1].pressed);
   CHECK(texts == std::vector<std::string>{"q"});
@@ -201,7 +201,7 @@ TEST_CASE("win32: the loop keeps turning inside a modal size loop")
   run_gui_test(loop, [](vio::event_loop_t &loop, int &ticks_inside) -> vio::task_t<void> {
     auto display = open_win32(loop);
     {
-      auto window = gui::window_t::create(display);
+      auto window = vui::window_t::create(display);
       co_await window->frame();
       int ticks = 0;
       bool stop_ticking = false;
@@ -284,10 +284,10 @@ TEST_CASE("win32: a WARP device presents through a swap chain made for the windo
   run_gui_test(loop, [](vio::event_loop_t &loop, ID3D12CommandQueue *queue) -> vio::task_t<void> {
     auto display = open_win32(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {128, 96}});
+      auto window = vui::window_t::create(display, {.size = {128, 96}});
       auto frame = co_await window->frame();
       REQUIRE(frame.has_value());
-      auto chain = gui::d3d12::create_swap_chain(*window, queue);
+      auto chain = vui::d3d12::create_swap_chain(*window, queue);
       if (!chain)
         FAIL("swap chain: " << chain.error().msg);
       auto *swap_chain = static_cast<IDXGISwapChain3 *>(*chain);
@@ -296,13 +296,13 @@ TEST_CASE("win32: a WARP device presents through a swap chain made for the windo
         CHECK(SUCCEEDED(swap_chain->Present(1, 0)));
         co_await window->frame();
       }
-      auto sizes = window->subscribe<gui::resize_event_t>();
+      auto sizes = window->subscribe<vui::resize_event_t>();
       REQUIRE(window->set_size({200, 150}).has_value());
       auto resized = co_await sizes;
-      CHECK(gui::d3d12::resize_swap_chain(swap_chain, resized->framebuffer).has_value());
+      CHECK(vui::d3d12::resize_swap_chain(swap_chain, resized->framebuffer).has_value());
       CHECK(SUCCEEDED(swap_chain->Present(1, 0)));
       swap_chain->Release();
-      auto luid = gui::adapter_luid(*window);
+      auto luid = vui::adapter_luid(*window);
       CHECK(luid.has_value());
     }
     loop.stop();
@@ -320,9 +320,9 @@ TEST_CASE("win32: a GL context draws or reports that GL is not available")
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_win32(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {64, 48}});
+      auto window = vui::window_t::create(display, {.size = {64, 48}});
       co_await window->frame();
-      auto context = gui::gl_context_t::create(*window, {.major = 2, .minor = 1, .core_profile = false});
+      auto context = vui::gl_context_t::create(*window, {.major = 2, .minor = 1, .core_profile = false});
       if (!context)
       {
         CHECK(context.error().code == vio::errc::not_supported);

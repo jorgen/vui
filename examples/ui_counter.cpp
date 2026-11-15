@@ -41,13 +41,13 @@ Copyright (c) 2026 Jørgen Lind
 #include <vector>
 
 #include <vio/event_loop.h>
-#include <vio/gui/gui.h>
-#include <vio/gui/ui/ui.h>
+#include <vui/vui.h>
+#include <vui/ui/ui.h>
 #include <vio/operation/sleep.h>
 #include <vio/run.h>
 
-namespace gui = vio::gui;
-namespace ui = vio::gui::ui;
+namespace gui = vui;
+namespace ui = vui::ui;
 using namespace std::chrono_literals;
 
 namespace
@@ -485,18 +485,18 @@ int main(int argc, char **argv)
 {
   const auto limit = std::chrono::milliseconds(argc > 1 ? std::atoi(argv[1]) : 0);
   return vio::run([limit](vio::event_loop_t &loop) -> vio::task_t<int> {
-    auto display = gui::display_t::open(loop);
+    auto display = vui::display_t::open(loop);
     if (!display)
     {
       std::fprintf(stderr, "no display: %s\n", display.error().msg.c_str());
       co_return 1;
     }
     {
-      auto window = gui::window_t::create(*display, {.title = "vio ui: counters and plots", .size = {1100, 920}});
+      auto window = vui::window_t::create(*display, {.title = "vio ui: counters and plots", .size = {1100, 920}});
       if (!window)
         co_return 1;
-      auto closing = [](gui::window_t &window, std::chrono::milliseconds limit) -> vio::task_t<void> {
-        auto requests = window.subscribe<gui::close_request_t>();
+      auto closing = [](vui::window_t &window, std::chrono::milliseconds limit) -> vio::task_t<void> {
+        auto requests = window.subscribe<vui::close_request_t>();
         if (limit.count() > 0)
         {
           // For CI: close after the given time, whatever happens.

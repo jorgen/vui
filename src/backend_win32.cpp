@@ -37,15 +37,15 @@ Copyright (c) 2026 Jørgen Lind
 #include <thread>
 #include <vector>
 
-#include "vio/gui/backends.h"
-#include "vio/gui/gui.h"
+#include "vui/backends.h"
+#include "vui/vui.h"
 #include "vio/host_loop.h"
 #include "win32_common.h"
 
 #include <windows.h>
 #include <windowsx.h>
 
-namespace vio::gui::detail
+namespace vui::detail
 {
 namespace
 {
@@ -184,7 +184,7 @@ class win32_display_t;
 class win32_thread_t final : public vio::host_wait_t
 {
 public:
-  explicit win32_thread_t(event_loop_t &loop)
+  explicit win32_thread_t(vio::event_loop_t &loop)
     : loop(loop)
   {
   }
@@ -204,14 +204,14 @@ public:
   {
     _port = reinterpret_cast<HANDLE>(vio::loop_native_handle(loop));
     if (!_port || _port == INVALID_HANDLE_VALUE)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     helper = CreateWindowExW(0, helper_class, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), this);
     if (!helper)
-      return errc::out_of_memory;
+      return vio::errc::out_of_memory;
     _arm = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     _finished = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!_arm || !_finished)
-      return errc::out_of_memory;
+      return vio::errc::out_of_memory;
     _forwarder = std::thread([this] {
       forward();
       SetEvent(_finished);
@@ -267,7 +267,7 @@ public:
       arm_modal_timer();
   }
 
-  event_loop_t &loop;
+  vio::event_loop_t &loop;
   HWND helper = nullptr;
   int modal = 0;
   std::size_t displays = 0;
@@ -445,7 +445,7 @@ public:
     }
     else if (&thread->loop != impl.loop)
     {
-      return errc::busy;
+      return vio::errc::busy;
     }
     ++thread->displays;
     return 0;
@@ -496,7 +496,7 @@ public:
   {
     if (!OpenClipboard(thread->helper))
     {
-      impl.clipboard_arrived(std::unexpected(errc::busy));
+      impl.clipboard_arrived(std::unexpected(vio::errc::busy));
       return;
     }
     std::string text;
@@ -590,7 +590,7 @@ int win32_window_t::create(const window_config_t &config)
   const std::wstring title = widen(config.title);
   CreateWindowExW(_ex_style, window_class, title.c_str(), _style, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, GetModuleHandleW(nullptr), this);
   if (!handle)
-    return errc::out_of_memory;
+    return vio::errc::out_of_memory;
   const float factor = scale();
   if (factor != 1.0f)
   {
@@ -831,7 +831,7 @@ void win32_window_t::set_title(std::string_view title)
 int win32_window_t::set_size(extent_t size)
 {
   if (_fullscreen)
-    return errc::busy;
+    return vio::errc::busy;
   const RECT rect = outer_rect(size);
   SetWindowPos(handle, nullptr, 0, 0, rect.right - rect.left, rect.bottom - rect.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
   return 0;
@@ -847,7 +847,7 @@ std::expected<point_t, int> win32_window_t::position() const
 {
   RECT rect{};
   if (!GetWindowRect(handle, &rect))
-    return std::unexpected(errc::io_error);
+    return std::unexpected(vio::errc::io_error);
   return point_t{static_cast<double>(rect.left), static_cast<double>(rect.top)};
 }
 
@@ -946,4 +946,4 @@ std::expected<std::unique_ptr<display_backend_t>, int> make_win32_backend(displa
     return std::unexpected(result);
   return made;
 }
-} // namespace vio::gui::detail
+} // namespace vui::detail

@@ -30,9 +30,9 @@ Copyright (c) 2026 Jørgen Lind
 
 #include <dxgi1_6.h>
 
-#include "vio/gui/context.h"
+#include "vui/context.h"
 
-namespace vio::gui
+namespace vui
 {
 namespace detail
 {
@@ -95,12 +95,12 @@ struct wgl_t
   {
     library = LoadLibraryW(L"opengl32.dll");
     if (!library)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     if (!(load(create_context, "wglCreateContext") && load(delete_context, "wglDeleteContext") && load(make_current, "wglMakeCurrent") && load(get_current_context, "wglGetCurrentContext") && load(get_proc_address, "wglGetProcAddress")))
-      return errc::not_supported;
+      return vio::errc::not_supported;
     HWND dummy = CreateWindowExW(0, L"STATIC", L"", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!dummy)
-      return errc::out_of_memory;
+      return vio::errc::out_of_memory;
     HDC dc = GetDC(dummy);
     PIXELFORMATDESCRIPTOR format{};
     format.nSize = sizeof(format);
@@ -108,7 +108,7 @@ struct wgl_t
     format.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
     format.iPixelType = PFD_TYPE_RGBA;
     format.cColorBits = 24;
-    int result = errc::not_supported;
+    int result = vio::errc::not_supported;
     if (SetPixelFormat(dc, ChoosePixelFormat(dc, &format), &format))
     {
       if (HGLRC context = create_context(dc))
@@ -148,11 +148,11 @@ public:
   {
     _wgl = wgl();
     if (!_wgl)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     _hwnd = win32_handle(window);
     _dc = GetDC(_hwnd);
     if (!_dc)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     if (GetPixelFormat(_dc) == 0)
     {
       const int attributes[] = {
@@ -174,11 +174,11 @@ public:
       int format = 0;
       UINT count = 0;
       if (!_wgl->choose_pixel_format(_dc, attributes, nullptr, 1, &format, &count) || count == 0)
-        return errc::not_supported;
+        return vio::errc::not_supported;
       PIXELFORMATDESCRIPTOR descriptor{};
       DescribePixelFormat(_dc, format, sizeof(descriptor), &descriptor);
       if (!SetPixelFormat(_dc, format, &descriptor))
-        return errc::not_supported;
+        return vio::errc::not_supported;
     }
     std::vector<int> attributes = {wgl_context_major_version, config.major, wgl_context_minor_version, config.minor};
     attributes.push_back(wgl_context_profile_mask);
@@ -191,7 +191,7 @@ public:
     attributes.push_back(0);
     _context = _wgl->create_context_attribs(_dc, nullptr, attributes.data());
     if (!_context)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     window.attach(*this);
     if (int result = make_current(); result < 0)
       return result;
@@ -203,8 +203,8 @@ public:
   int make_current() override
   {
     if (!_context)
-      return errc::canceled;
-    return _wgl->make_current(_dc, _context) ? 0 : errc::io_error;
+      return vio::errc::canceled;
+    return _wgl->make_current(_dc, _context) ? 0 : vio::errc::io_error;
   }
 
   void release_current() override
@@ -216,8 +216,8 @@ public:
   int swap_buffers() override
   {
     if (!_context)
-      return errc::canceled;
-    return SwapBuffers(_dc) ? 0 : errc::io_error;
+      return vio::errc::canceled;
+    return SwapBuffers(_dc) ? 0 : vio::errc::io_error;
   }
 
   void *proc_address(const char *name) const override
@@ -233,10 +233,10 @@ public:
   int set_swap_interval(int interval) override
   {
     if (!_context)
-      return errc::canceled;
+      return vio::errc::canceled;
     if (!_wgl->swap_interval)
-      return errc::not_supported;
-    return _wgl->swap_interval(interval) ? 0 : errc::not_supported;
+      return vio::errc::not_supported;
+    return _wgl->swap_interval(interval) ? 0 : vio::errc::not_supported;
   }
 
   gl_native_t native() const override
@@ -328,15 +328,15 @@ std::expected<std::unique_ptr<gl_impl_t>, int> make_wgl_context(window_impl_t &w
 
 namespace d3d12
 {
-std::expected<void *, error_t> create_swap_chain(window_t &window, void *command_queue, const swap_chain_config_t &config)
+std::expected<void *, vio::error_t> create_swap_chain(window_t &window, void *command_queue, const swap_chain_config_t &config)
 {
   if (!window)
-    return std::unexpected(make_error(errc::canceled));
+    return std::unexpected(vio::make_error(vio::errc::canceled));
   if (!command_queue || config.buffer_count < 2)
-    return std::unexpected(make_error(errc::invalid_argument));
+    return std::unexpected(vio::make_error(vio::errc::invalid_argument));
   detail::com_t<IDXGIFactory2> factory;
   if (FAILED(detail::create_factory(__uuidof(IDXGIFactory2), reinterpret_cast<void **>(factory.put()))))
-    return std::unexpected(make_error(errc::not_supported));
+    return std::unexpected(vio::make_error(vio::errc::not_supported));
   UINT flags = 0;
   if (config.allow_tearing)
   {
@@ -360,34 +360,34 @@ std::expected<void *, error_t> create_swap_chain(window_t &window, void *command
   description.Flags = flags;
   detail::com_t<IDXGISwapChain1> chain;
   if (FAILED(factory->CreateSwapChainForHwnd(static_cast<IUnknown *>(command_queue), hwnd, &description, nullptr, nullptr, chain.put())))
-    return std::unexpected(make_error(errc::not_supported));
+    return std::unexpected(vio::make_error(vio::errc::not_supported));
   factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
   IDXGISwapChain3 *result = nullptr;
   if (FAILED(chain->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void **>(&result))))
-    return std::unexpected(make_error(errc::not_supported));
+    return std::unexpected(vio::make_error(vio::errc::not_supported));
   return static_cast<void *>(result);
 }
 
-std::expected<void, error_t> resize_swap_chain(void *swap_chain, extent_t framebuffer)
+std::expected<void, vio::error_t> resize_swap_chain(void *swap_chain, extent_t framebuffer)
 {
   if (!swap_chain || framebuffer.width <= 0 || framebuffer.height <= 0)
-    return std::unexpected(make_error(errc::invalid_argument));
+    return std::unexpected(vio::make_error(vio::errc::invalid_argument));
   auto *chain = static_cast<IDXGISwapChain1 *>(swap_chain);
   DXGI_SWAP_CHAIN_DESC1 description{};
   chain->GetDesc1(&description);
   if (FAILED(chain->ResizeBuffers(0, static_cast<UINT>(framebuffer.width), static_cast<UINT>(framebuffer.height), DXGI_FORMAT_UNKNOWN, description.Flags)))
-    return std::unexpected(make_error(errc::io_error));
+    return std::unexpected(vio::make_error(vio::errc::io_error));
   return {};
 }
 } // namespace d3d12
 
-std::expected<std::array<std::uint8_t, 8>, error_t> adapter_luid(window_t &window)
+std::expected<std::array<std::uint8_t, 8>, vio::error_t> adapter_luid(window_t &window)
 {
   if (!window)
-    return std::unexpected(make_error(errc::canceled));
+    return std::unexpected(vio::make_error(vio::errc::canceled));
   detail::com_t<IDXGIFactory1> factory;
   if (FAILED(detail::create_factory(__uuidof(IDXGIFactory1), reinterpret_cast<void **>(factory.put()))))
-    return std::unexpected(make_error(errc::not_supported));
+    return std::unexpected(vio::make_error(vio::errc::not_supported));
   const HMONITOR monitor = MonitorFromWindow(detail::win32_handle(*window.impl()), MONITOR_DEFAULTTONEAREST);
   std::optional<LUID> found;
   std::optional<LUID> first;
@@ -417,10 +417,10 @@ std::expected<std::array<std::uint8_t, 8>, error_t> adapter_luid(window_t &windo
   if (!found)
     found = first;
   if (!found)
-    return std::unexpected(make_error(errc::no_such_device));
+    return std::unexpected(vio::make_error(vio::errc::no_such_device));
   std::array<std::uint8_t, 8> luid{};
   std::memcpy(luid.data(), &found->LowPart, 4);
   std::memcpy(luid.data() + 4, &found->HighPart, 4);
   return luid;
 }
-} // namespace vio::gui
+} // namespace vui

@@ -29,11 +29,11 @@ Copyright (c) 2026 Jørgen Lind
 
 #include <vulkan/vulkan.h>
 
-#include <vio/gui/context.h>
-#include <vio/gui/gui.h>
+#include <vui/context.h>
+#include <vui/vui.h>
 #include <vio/run.h>
 
-namespace gui = vio::gui;
+namespace gui = vui;
 
 namespace
 {
@@ -73,9 +73,9 @@ struct device_t
       vkDestroyInstance(instance, nullptr);
   }
 
-  bool create(gui::display_t &display, gui::window_t &window)
+  bool create(vui::display_t &display, vui::window_t &window)
   {
-    auto extensions = gui::vulkan::required_instance_extensions(display);
+    auto extensions = vui::vulkan::required_instance_extensions(display);
     VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     application.pApplicationName = "vulkan clear";
     application.apiVersion = VK_API_VERSION_1_1;
@@ -90,7 +90,7 @@ struct device_t
     if (vkCreateInstance(&instance_info, nullptr, &instance) != VK_SUCCESS)
       return false;
 
-    auto made = gui::vulkan::create_surface(window, instance, reinterpret_cast<gui::vulkan::get_instance_proc_addr_t>(&vkGetInstanceProcAddr));
+    auto made = vui::vulkan::create_surface(window, instance, reinterpret_cast<vui::vulkan::get_instance_proc_addr_t>(&vkGetInstanceProcAddr));
     if (!made)
     {
       std::println(stderr, "surface: {}", made.error().msg);
@@ -121,7 +121,7 @@ struct device_t
     }
     if (!physical)
       return false;
-    if (auto uuid = gui::vulkan::device_uuid(instance, physical, reinterpret_cast<gui::vulkan::get_instance_proc_addr_t>(&vkGetInstanceProcAddr)))
+    if (auto uuid = vui::vulkan::device_uuid(instance, physical, reinterpret_cast<vui::vulkan::get_instance_proc_addr_t>(&vkGetInstanceProcAddr)))
       std::println("device uuid starts {:02x}{:02x}{:02x}{:02x}, the value cuDeviceGetUuid reports for the same GPU", (*uuid)[0], (*uuid)[1], (*uuid)[2], (*uuid)[3]);
 
     const float priority = 1.0f;
@@ -160,7 +160,7 @@ struct device_t
     return true;
   }
 
-  bool build_swapchain(gui::extent_t framebuffer)
+  bool build_swapchain(vui::extent_t framebuffer)
   {
     vkDeviceWaitIdle(device);
     VkSurfaceCapabilitiesKHR capabilities{};
@@ -264,7 +264,7 @@ int main(int argc, char **argv)
 {
   const std::uint64_t frame_limit = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 0;
   return vio::run([frame_limit](vio::event_loop_t &loop) -> vio::task_t<int> {
-    auto display = gui::display_t::open(loop);
+    auto display = vui::display_t::open(loop);
     if (!display)
     {
       std::println(stderr, "no display: {}", display.error().msg);
@@ -272,12 +272,12 @@ int main(int argc, char **argv)
     }
     int status = 0;
     {
-      auto window = gui::window_t::create(*display, {.title = "vulkan clear", .size = {640, 400}});
+      auto window = vui::window_t::create(*display, {.title = "vulkan clear", .size = {640, 400}});
       if (!window)
         co_return 1;
       bool close = false;
-      auto closing = [](gui::window_t &window, bool &close) -> vio::task_t<void> {
-        auto requests = window.subscribe<gui::close_request_t>();
+      auto closing = [](vui::window_t &window, bool &close) -> vio::task_t<void> {
+        auto requests = window.subscribe<vui::close_request_t>();
         if (co_await requests)
           close = true;
       }(*window, close);
@@ -288,7 +288,7 @@ int main(int argc, char **argv)
           std::println(stderr, "Vulkan setup failed");
           status = 1;
         }
-        gui::extent_t built = window->framebuffer_size();
+        vui::extent_t built = window->framebuffer_size();
         if (status == 0)
         {
           while (auto frame = co_await window->frame())

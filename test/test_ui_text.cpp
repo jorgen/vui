@@ -33,8 +33,8 @@ Copyright (c) 2026 Jørgen Lind
 #include <vector>
 
 #include <vio/event_loop.h>
-#include <vio/gui/gui.h>
-#include <vio/gui/ui/ui.h>
+#include <vui/vui.h>
+#include <vui/ui/ui.h>
 #include <vio/operation/sleep.h>
 #include <vio/task.h>
 
@@ -42,17 +42,17 @@ Copyright (c) 2026 Jørgen Lind
 #include "ui_renderer.h"
 #include "ui_text.h"
 
-#if defined(VIO_GUI_TEST_FONTS)
+#if defined(VUI_TEST_FONTS)
 
 using namespace std::chrono_literals;
-namespace gui = vio::gui;
-namespace ui = vio::gui::ui;
+namespace gui = vui;
+namespace ui = vui::ui;
 
 namespace
 {
 ui::font_t load(const char *relative)
 {
-  auto font = ui::font_t::from_file(std::string(VIO_GUI_TEST_FONTS) + "/" + relative);
+  auto font = ui::font_t::from_file(std::string(VUI_TEST_FONTS) + "/" + relative);
   REQUIRE_MESSAGE(font.has_value(), font.error());
   return *font;
 }
@@ -77,8 +77,8 @@ struct snapshot_t
   std::vector<ui::run_t> runs;
   std::vector<std::uint8_t> atlas;
   ui::atlas_view_t view;
-  gui::extent_t logical;
-  gui::extent_t framebuffer;
+  vui::extent_t logical;
+  vui::extent_t framebuffer;
   float scale = 1;
 
   void take(const ui::display_list_t &list)
@@ -151,13 +151,13 @@ void run_label(snapshot_t &one, snapshot_t &two)
   run_gui_test(loop,
                [](vio::event_loop_t &loop, snapshot_t &one, snapshot_t &two) -> vio::task_t<void>
                {
-                 gui::display_config_t display_config;
+                 vui::display_config_t display_config;
                  display_config.backend = "null";
                  display_config.frame_interval_ns = std::chrono::nanoseconds(2ms).count();
-                 auto display = gui::display_t::open(loop, display_config);
+                 auto display = vui::display_t::open(loop, display_config);
                  REQUIRE(display.has_value());
                  {
-                   auto window = gui::window_t::create(*display, {.size = {200, 100}});
+                   auto window = vui::window_t::create(*display, {.size = {200, 100}});
                    label_t label{roboto()};
                    snapshot_t latest;
                    ui::run_config_t config;
@@ -273,13 +273,13 @@ TEST_CASE("ui text: a row aligned on baselines puts every text's baseline on one
   run_gui_test(loop,
                [](vio::event_loop_t &loop, snapshot_t &seen) -> vio::task_t<void>
                {
-                 gui::display_config_t display_config;
+                 vui::display_config_t display_config;
                  display_config.backend = "null";
                  display_config.frame_interval_ns = std::chrono::nanoseconds(2ms).count();
-                 auto display = gui::display_t::open(loop, display_config);
+                 auto display = vui::display_t::open(loop, display_config);
                  REQUIRE(display.has_value());
                  {
-                   auto window = gui::window_t::create(*display, {.size = {200, 100}});
+                   auto window = vui::window_t::create(*display, {.size = {200, 100}});
                    line_t line{roboto()};
                    ui::run_config_t config;
                    config.on_display_list = [&seen](const ui::display_list_t &list) { seen.take(list); };
@@ -325,13 +325,13 @@ TEST_CASE("ui text: a tight label is centred on its box by its ink, not by its l
   run_gui_test(loop,
                [](vio::event_loop_t &loop, snapshot_t &seen) -> vio::task_t<void>
                {
-                 gui::display_config_t display_config;
+                 vui::display_config_t display_config;
                  display_config.backend = "null";
                  display_config.frame_interval_ns = std::chrono::nanoseconds(2ms).count();
-                 auto display = gui::display_t::open(loop, display_config);
+                 auto display = vui::display_t::open(loop, display_config);
                  REQUIRE(display.has_value());
                  {
-                   auto window = gui::window_t::create(*display, {.size = {200, 100}});
+                   auto window = vui::window_t::create(*display, {.size = {200, 100}});
                    buttons_t buttons{roboto()};
                    ui::run_config_t config;
                    config.on_display_list = [&seen](const ui::display_list_t &list) { seen.take(list); };
@@ -450,22 +450,22 @@ TEST_CASE("vulkan: a glyph added later reaches the screen through the atlas's di
   run_gui_test(loop,
                [](vio::event_loop_t &loop, std::vector<snapshot_t> &frames) -> vio::task_t<void>
                {
-                 gui::display_config_t display_config;
+                 vui::display_config_t display_config;
                  display_config.backend = "null";
                  display_config.frame_interval_ns = std::chrono::nanoseconds(2ms).count();
-                 auto display = gui::display_t::open(loop, display_config);
+                 auto display = vui::display_t::open(loop, display_config);
                  REQUIRE(display.has_value());
                  {
-                   auto window = gui::window_t::create(*display, {.size = {200, 100}});
+                   auto window = vui::window_t::create(*display, {.size = {200, 100}});
                    growing_t growing{roboto()};
                    ui::run_config_t config;
                    config.on_display_list = [&frames](const ui::display_list_t &list) { frames.emplace_back().take(list); };
                    auto running = ui::run(*window, growing, std::move(config));
                    (void)co_await vio::sleep(loop, 40ms);
-                   const gui::point_t box{10, 35};
-                   window->impl()->on_input(gui::pointer_move_event_t{box});
-                   window->impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, true, box});
-                   window->impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, false, box});
+                   const vui::point_t box{10, 35};
+                   window->impl()->on_input(vui::pointer_move_event_t{box});
+                   window->impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, box});
+                   window->impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, box});
                    (void)co_await vio::sleep(loop, 40ms);
                    window->close();
                    co_await std::move(running);

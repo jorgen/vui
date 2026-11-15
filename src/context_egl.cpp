@@ -27,9 +27,9 @@ Copyright (c) 2026 Jørgen Lind
 
 #include <dlfcn.h>
 
-#include "vio/gui/context.h"
+#include "vui/context.h"
 
-namespace vio::gui::detail
+namespace vui::detail
 {
 namespace
 {
@@ -120,36 +120,36 @@ struct egl_t
   {
     library = dlopen("libEGL.so.1", RTLD_NOW | RTLD_LOCAL);
     if (!library)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     bool ok = load(initialize, "eglInitialize") && load(terminate, "eglTerminate") && load(bind_api, "eglBindAPI") && load(choose_config, "eglChooseConfig") && load(get_config_attrib, "eglGetConfigAttrib") && load(create_context, "eglCreateContext") && load(destroy_context, "eglDestroyContext") && load(destroy_surface, "eglDestroySurface") && load(make_current, "eglMakeCurrent") && load(get_current_context, "eglGetCurrentContext") && load(swap_buffers, "eglSwapBuffers") && load(swap_interval, "eglSwapInterval") && load(get_proc_address, "eglGetProcAddress") && load(get_error, "eglGetError");
     if (!ok)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     if (!load(get_platform_display, "eglGetPlatformDisplay"))
       get_platform_display = reinterpret_cast<decltype(get_platform_display)>(get_proc_address("eglGetPlatformDisplayEXT"));
     if (!load(create_platform_window_surface, "eglCreatePlatformWindowSurface"))
       create_platform_window_surface = reinterpret_cast<decltype(create_platform_window_surface)>(get_proc_address("eglCreatePlatformWindowSurfaceEXT"));
     if (!get_platform_display || !create_platform_window_surface)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     if (platform == platform_t::wayland)
     {
       wayland_egl = dlopen("libwayland-egl.so.1", RTLD_NOW | RTLD_LOCAL);
       if (!wayland_egl)
-        return errc::not_supported;
+        return vio::errc::not_supported;
       wl_egl_window_create = reinterpret_cast<decltype(wl_egl_window_create)>(dlsym(wayland_egl, "wl_egl_window_create"));
       wl_egl_window_resize = reinterpret_cast<decltype(wl_egl_window_resize)>(dlsym(wayland_egl, "wl_egl_window_resize"));
       wl_egl_window_destroy = reinterpret_cast<decltype(wl_egl_window_destroy)>(dlsym(wayland_egl, "wl_egl_window_destroy"));
       if (!wl_egl_window_create || !wl_egl_window_resize || !wl_egl_window_destroy)
-        return errc::not_supported;
+        return vio::errc::not_supported;
     }
     display = get_platform_display(platform == platform_t::wayland ? egl_platform_wayland : egl_platform_x11, native_display, nullptr);
     if (!display)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     EGLint major = 0;
     EGLint minor = 0;
     if (!initialize(display, &major, &minor))
     {
       display = nullptr;
-      return errc::not_supported;
+      return vio::errc::not_supported;
     }
     return 0;
   }
@@ -189,7 +189,7 @@ public:
     std::array<EGLConfig, 64> configs{};
     EGLint count = 0;
     if (!egl.choose_config(egl.display, attributes, configs.data(), static_cast<EGLint>(configs.size()), &count) || count == 0)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     _config = configs[0];
     if (_platform == platform_t::x11 && native.visual != 0)
     {
@@ -207,7 +207,7 @@ public:
 
     _api = config.es ? egl_opengl_es_api : egl_opengl_api;
     if (!egl.bind_api(_api))
-      return errc::not_supported;
+      return vio::errc::not_supported;
     std::vector<EGLint> context_attributes = {egl_context_major_version, config.major, egl_context_minor_version, config.minor};
     if (!config.es)
     {
@@ -222,7 +222,7 @@ public:
     context_attributes.push_back(egl_none);
     _context = egl.create_context(egl.display, _config, nullptr, context_attributes.data());
     if (!_context)
-      return errc::not_supported;
+      return vio::errc::not_supported;
 
     _framebuffer = window.framebuffer;
     void *native_window = nullptr;
@@ -230,7 +230,7 @@ public:
     {
       _wayland_window = egl.wl_egl_window_create(native.handle, std::max(1, _framebuffer.width), std::max(1, _framebuffer.height));
       if (!_wayland_window)
-        return errc::out_of_memory;
+        return vio::errc::out_of_memory;
       native_window = _wayland_window;
     }
     else
@@ -247,7 +247,7 @@ public:
     surface_attributes.push_back(egl_none);
     _surface = egl.create_platform_window_surface(egl.display, _config, native_window, surface_attributes.data());
     if (!_surface)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     _window = &window;
     window.attach(*this);
     if (int result = make_current(); result < 0)
@@ -259,7 +259,7 @@ public:
   int make_current() override
   {
     if (!_egl || !_context || !_surface)
-      return errc::canceled;
+      return vio::errc::canceled;
     if (_wayland_window && _window && _window->framebuffer != _framebuffer && _window->framebuffer.width > 0 && _window->framebuffer.height > 0)
     {
       _framebuffer = _window->framebuffer;
@@ -267,7 +267,7 @@ public:
     }
     _egl->bind_api(_api);
     if (!_egl->make_current(_egl->display, _surface, _surface, _context))
-      return errc::io_error;
+      return vio::errc::io_error;
     return 0;
   }
 
@@ -280,9 +280,9 @@ public:
   int swap_buffers() override
   {
     if (!_egl || !_surface)
-      return errc::canceled;
+      return vio::errc::canceled;
     if (!_egl->swap_buffers(_egl->display, _surface))
-      return errc::io_error;
+      return vio::errc::io_error;
     return 0;
   }
 
@@ -294,8 +294,8 @@ public:
   int set_swap_interval(int interval) override
   {
     if (!_egl || !_context)
-      return errc::canceled;
-    return _egl->swap_interval(_egl->display, interval) ? 0 : errc::not_supported;
+      return vio::errc::canceled;
+    return _egl->swap_interval(_egl->display, interval) ? 0 : vio::errc::not_supported;
   }
 
   gl_native_t native() const override
@@ -365,4 +365,4 @@ std::expected<std::unique_ptr<gl_impl_t>, int> make_egl_context(window_impl_t &w
     return std::unexpected(result);
   return context;
 }
-} // namespace vio::gui::detail
+} // namespace vui::detail

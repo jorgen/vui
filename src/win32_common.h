@@ -31,9 +31,9 @@ Copyright (c) 2026 Jørgen Lind
 
 #include <windows.h>
 
-#include "vio/gui/detail/core.h"
+#include "vui/detail/core.h"
 
-namespace vio::gui::detail
+namespace vui::detail
 {
 HWND win32_handle(window_impl_t &window);
 
@@ -77,4 +77,4 @@ inline void win32_adjust_rect(RECT &rect, DWORD style, DWORD ex_style, UINT dpi)
   else
     AdjustWindowRectEx(&rect, style, FALSE, ex_style);
 }
-} // namespace vio::gui::detail
+} // namespace vui::detail

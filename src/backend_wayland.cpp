@@ -37,8 +37,8 @@ Copyright (c) 2026 Jørgen Lind
 
 #include <vio/operation/fd_watch.h>
 
-#include "vio/gui/backends.h"
-#include "vio/gui/gui.h"
+#include "vui/backends.h"
+#include "vui/vui.h"
 
 #include <linux/input-event-codes.h>
 #include <wayland-client.h>
@@ -48,7 +48,7 @@ Copyright (c) 2026 Jørgen Lind
 #include "xdg-decoration-unstable-v1.h"
 #include "xdg-shell.h"
 
-namespace vio::gui::detail
+namespace vui::detail
 {
 namespace
 {
@@ -358,13 +358,13 @@ public:
   {
     display = wl_display_connect(nullptr);
     if (!display)
-      return errc::no_such_device;
+      return vio::errc::no_such_device;
     _registry = wl_display_get_registry(display);
     wl_registry_add_listener(_registry, &registry_listener, this);
     if (wl_display_roundtrip(display) < 0 || wl_display_roundtrip(display) < 0)
-      return errc::io_error;
+      return vio::errc::io_error;
     if (!compositor || !wm_base)
-      return errc::not_supported;
+      return vio::errc::not_supported;
     _xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     auto watch = vio::fd_watch_create(*impl.loop, wl_display_get_fd(display));
     if (!watch)
@@ -454,7 +454,7 @@ public:
     int fds[2];
     if (::pipe2(fds, O_CLOEXEC | O_NONBLOCK) < 0)
     {
-      impl.clipboard_arrived(std::unexpected(errc::too_many_open_files));
+      impl.clipboard_arrived(std::unexpected(vio::errc::too_many_open_files));
       return;
     }
     wl_data_offer_receive(_offer, text_mime, fds[1]);
@@ -969,7 +969,7 @@ private:
   point_t _pointer_position;
   modifier_t _modifiers = modifier_t::none;
   vio::timer_t _repeat;
-  deferred_call_t _reap;
+  vio::deferred_call_t _reap;
   std::string _clipboard_text;
   std::uint32_t _serial = 0;
   std::uint32_t _pointer_serial = 0;
@@ -1027,7 +1027,7 @@ void clipboard_read_t::on_readable(void *context)
       vio::fd_watch_arm(*self->watch, vio::fd_interest::read);
       return;
     }
-    self->finish(std::unexpected(errc::io_error));
+    self->finish(std::unexpected(vio::errc::io_error));
     return;
   }
 }
@@ -1062,7 +1062,7 @@ int wayland_window_t::create(const window_config_t &config)
 {
   surface = wl_compositor_create_surface(_display.compositor);
   if (!surface)
-    return errc::out_of_memory;
+    return vio::errc::out_of_memory;
   wl_surface_add_listener(surface, &surface_listener, this);
   _title = config.title;
   _size = config.size;
@@ -1263,7 +1263,7 @@ void wayland_window_t::set_title(std::string_view title)
 int wayland_window_t::set_size(extent_t size)
 {
   if (_fullscreen || _maximized)
-    return errc::busy;
+    return vio::errc::busy;
   _size = size;
   if (!_resizable && _toplevel)
   {
@@ -1276,12 +1276,12 @@ int wayland_window_t::set_size(extent_t size)
 
 int wayland_window_t::set_position(point_t)
 {
-  return errc::not_supported;
+  return vio::errc::not_supported;
 }
 
 std::expected<point_t, int> wayland_window_t::position() const
 {
-  return std::unexpected(errc::not_supported);
+  return std::unexpected(vio::errc::not_supported);
 }
 
 void wayland_window_t::set_size_limits(extent_t min_size, extent_t max_size)
@@ -1372,4 +1372,4 @@ std::expected<std::unique_ptr<display_backend_t>, int> make_wayland_backend(disp
     return std::unexpected(result);
   return made;
 }
-} // namespace vio::gui::detail
+} // namespace vui::detail

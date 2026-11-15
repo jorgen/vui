@@ -32,8 +32,8 @@ Copyright (c) 2026 Jørgen Lind
 #include <vector>
 
 #include <vio/event_loop.h>
-#include <vio/gui/gui.h>
-#include <vio/gui/ui/ui.h>
+#include <vui/vui.h>
+#include <vui/ui/ui.h>
 #include <vio/operation/sleep.h>
 #include <vio/task.h>
 
@@ -41,8 +41,8 @@ Copyright (c) 2026 Jørgen Lind
 #include "ui_renderer.h"
 
 using namespace std::chrono_literals;
-namespace gui = vio::gui;
-namespace ui = vio::gui::ui;
+namespace gui = vui;
+namespace ui = vui::ui;
 
 namespace
 {
@@ -51,23 +51,23 @@ constexpr ui::color_t green{0, 1, 0, 1};
 constexpr ui::color_t blue{0, 0, 1, 1};
 constexpr ui::color_t grey{0.5f, 0.5f, 0.5f, 1};
 
-gui::display_t open_null(vio::event_loop_t &loop)
+vui::display_t open_null(vio::event_loop_t &loop)
 {
-  gui::display_config_t config;
+  vui::display_config_t config;
   config.backend = "null";
   config.frame_interval_ns = std::chrono::nanoseconds(2ms).count();
-  auto display = gui::display_t::open(loop, config);
+  auto display = vui::display_t::open(loop, config);
   REQUIRE(display.has_value());
   return std::move(*display);
 }
 
-void click(gui::window_t &window, gui::point_t at)
+void click(vui::window_t &window, vui::point_t at)
 {
-  window.impl()->on_input(gui::pointer_move_event_t{at});
-  window.impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, true, at});
-  window.impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, false, at});
+  window.impl()->on_input(vui::pointer_move_event_t{at});
+  window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, at});
+  window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, at});
   // Off every box again, so hovering is not a change of its own.
-  window.impl()->on_input(gui::pointer_move_event_t{{900, 900}});
+  window.impl()->on_input(vui::pointer_move_event_t{{900, 900}});
 }
 
 vio::task_t<void> settle(vio::event_loop_t &loop)
@@ -178,7 +178,7 @@ TEST_CASE("ui render: boxes become prims in painter's order, with a box's shadow
                {
                  auto display = open_null(loop);
                  {
-                   auto window = gui::window_t::create(display, {.size = {200, 100}});
+                   auto window = vui::window_t::create(display, {.size = {200, 100}});
                    shadowed_t root;
                    ui::run_config_t config;
                    config.on_display_list = [&seen](const ui::display_list_t &list) { seen.take(list); };
@@ -222,7 +222,7 @@ TEST_CASE("ui render: a large subtree holds its own chunk, and moving it changes
                {
                  auto display = open_null(loop);
                  {
-                   auto window = gui::window_t::create(display, {.size = {400, 100}});
+                   auto window = vui::window_t::create(display, {.size = {400, 100}});
                    page_t page;
                    snapshot_t latest;
                    ui::run_config_t config;
@@ -308,7 +308,7 @@ TEST_CASE("ui render: a chunk is given up only below half the threshold")
                {
                  auto display = open_null(loop);
                  {
-                   auto window = gui::window_t::create(display, {.size = {400, 100}});
+                   auto window = vui::window_t::create(display, {.size = {400, 100}});
                    backed_t root;
                    std::size_t latest = 0;
                    ui::run_config_t config;
@@ -317,8 +317,8 @@ TEST_CASE("ui render: a chunk is given up only below half the threshold")
                    auto running = ui::run(*window, root, std::move(config));
                    co_await settle(loop);
                    runs.push_back(latest); // n = 4: 6 prims, its own chunk
-                   const gui::point_t less{5, 9};
-                   const gui::point_t more{17, 9};
+                   const vui::point_t less{5, 9};
+                   const vui::point_t more{17, 9};
                    click(*window, less);
                    click(*window, less);
                    co_await settle(loop);
@@ -353,7 +353,7 @@ TEST_CASE("ui render: an expose repaints without running a view")
                {
                  auto display = open_null(loop);
                  {
-                   auto window = gui::window_t::create(display, {.size = {400, 100}});
+                   auto window = vui::window_t::create(display, {.size = {400, 100}});
                    grid_t grid;
                    int frames = 0;
                    auto running = ui::run(*window, grid, {.on_display_list = [&frames](const ui::display_list_t &) { ++frames; }});

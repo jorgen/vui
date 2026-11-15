@@ -26,10 +26,10 @@ Copyright (c) 2026 Jørgen Lind
 #include <cstring>
 #include <string_view>
 
-#include "vio/gui/backends.h"
-#include "vio/gui/gui.h"
+#include "vui/backends.h"
+#include "vui/vui.h"
 
-namespace vio::gui
+namespace vui
 {
 namespace detail
 {
@@ -41,7 +41,7 @@ void cancel_all(waiter_list_t &list, display_impl_t &display) noexcept
 {
   while (auto *waiter = list.pop_front())
   {
-    waiter->error = errc::canceled;
+    waiter->error = vio::errc::canceled;
     display.ready(*waiter);
   }
 }
@@ -53,7 +53,7 @@ value_waiter_t<T> &as(waiter_t &waiter) noexcept
 }
 } // namespace
 
-frame_clock_t::frame_clock_t(event_loop_t &loop, std::int64_t interval_ns, void (*fire)(void *), void *context)
+frame_clock_t::frame_clock_t(vio::event_loop_t &loop, std::int64_t interval_ns, void (*fire)(void *), void *context)
   : _loop(loop)
   , _timer(make_timer(loop))
   , _interval(interval_ns > 0 ? interval_ns : default_frame_interval)
@@ -279,7 +279,7 @@ void window_impl_t::deliver() noexcept
   }
 }
 
-display_impl_t::display_impl_t(event_loop_t &loop, const display_config_t &config)
+display_impl_t::display_impl_t(vio::event_loop_t &loop, const display_config_t &config)
   : loop(&loop)
   , config(config)
   , _dispatch_hook(loop, [this] { backend->dispatch(); })
@@ -306,7 +306,7 @@ void display_impl_t::release() noexcept
 {
   if (windows > 0)
   {
-    std::fprintf(stderr, "vio gui: a display was released while %zu window(s) were open; close them first\n", windows);
+    std::fprintf(stderr, "vui: a display was released while %zu window(s) were open; close them first\n", windows);
     std::abort();
   }
   if (!_started)
@@ -524,22 +524,22 @@ backend_factory_t choose_backend(std::string_view name, int &error)
 {
   if (name.empty())
   {
-    const char *forced = std::getenv("VIO_GUI_BACKEND");
+    const char *forced = std::getenv("VUI_BACKEND");
     name = forced ? forced : "";
   }
   if (name == "null")
     return &make_null_backend;
-#if defined(VIO_GUI_HAVE_WAYLAND)
+#if defined(VUI_HAVE_WAYLAND)
   if (name == "wayland")
     return &make_wayland_backend;
 #endif
-#if defined(VIO_GUI_HAVE_X11)
+#if defined(VUI_HAVE_X11)
   if (name == "x11")
     return &make_x11_backend;
 #endif
   if (!name.empty())
   {
-    error = errc::not_supported;
+    error = vio::errc::not_supported;
     return nullptr;
   }
 #if defined(_WIN32)
@@ -547,14 +547,14 @@ backend_factory_t choose_backend(std::string_view name, int &error)
 #elif defined(__APPLE__)
   return &make_cocoa_backend;
 #else
-#if defined(VIO_GUI_HAVE_WAYLAND)
+#if defined(VUI_HAVE_WAYLAND)
   if (const char *wayland = std::getenv("WAYLAND_DISPLAY"); wayland && *wayland)
     return &make_wayland_backend;
 #endif
-#if defined(VIO_GUI_HAVE_X11)
+#if defined(VUI_HAVE_X11)
   return &make_x11_backend;
 #else
-  error = errc::not_supported;
+  error = vio::errc::not_supported;
   return nullptr;
 #endif
 #endif
@@ -562,38 +562,38 @@ backend_factory_t choose_backend(std::string_view name, int &error)
 } // namespace
 } // namespace detail
 
-std::expected<display_t, error_t> display_t::open(event_loop_t &loop, const display_config_t &config)
+std::expected<display_t, vio::error_t> display_t::open(vio::event_loop_t &loop, const display_config_t &config)
 {
   int error = 0;
   auto factory = detail::choose_backend(config.backend, error);
   if (!factory)
-    return std::unexpected(make_error(error));
+    return std::unexpected(vio::make_error(error));
   display_t display;
   display._impl.reset(new detail::display_impl_t(loop, config));
   if (int result = display._impl->start(factory); result < 0)
   {
-#if defined(VIO_GUI_HAVE_WAYLAND) && defined(VIO_GUI_HAVE_X11)
-    if (factory == &detail::make_wayland_backend && config.backend.empty() && !std::getenv("VIO_GUI_BACKEND"))
+#if defined(VUI_HAVE_WAYLAND) && defined(VUI_HAVE_X11)
+    if (factory == &detail::make_wayland_backend && config.backend.empty() && !std::getenv("VUI_BACKEND"))
     {
       display._impl.reset(new detail::display_impl_t(loop, config));
       if (display._impl->start(&detail::make_x11_backend) == 0)
         return display;
     }
 #endif
-    return std::unexpected(make_error(result));
+    return std::unexpected(vio::make_error(result));
   }
   return display;
 }
 
-std::expected<window_t, error_t> window_t::create(display_t &display, const window_config_t &config)
+std::expected<window_t, vio::error_t> window_t::create(display_t &display, const window_config_t &config)
 {
   if (!display)
-    return std::unexpected(make_error(errc::invalid_argument));
+    return std::unexpected(vio::make_error(vio::errc::invalid_argument));
   window_t window;
   window._impl = std::make_unique<detail::window_impl_t>(*display.impl());
   auto backend = display.impl()->backend->create_window(*window._impl, config);
   if (!backend)
-    return std::unexpected(make_error(backend.error()));
+    return std::unexpected(vio::make_error(backend.error()));
   window._impl->backend = std::move(*backend);
   return window;
 }
@@ -604,33 +604,33 @@ void window_t::set_title(std::string_view title)
     _impl->backend->set_title(title);
 }
 
-std::expected<void, error_t> window_t::set_size(extent_t size)
+std::expected<void, vio::error_t> window_t::set_size(extent_t size)
 {
   if (!*this)
-    return std::unexpected(make_error(errc::canceled));
+    return std::unexpected(vio::make_error(vio::errc::canceled));
   if (size.width <= 0 || size.height <= 0)
-    return std::unexpected(make_error(errc::invalid_argument));
+    return std::unexpected(vio::make_error(vio::errc::invalid_argument));
   if (int result = _impl->backend->set_size(size); result < 0)
-    return std::unexpected(make_error(result));
+    return std::unexpected(vio::make_error(result));
   return {};
 }
 
-std::expected<void, error_t> window_t::set_position(point_t position)
+std::expected<void, vio::error_t> window_t::set_position(point_t position)
 {
   if (!*this)
-    return std::unexpected(make_error(errc::canceled));
+    return std::unexpected(vio::make_error(vio::errc::canceled));
   if (int result = _impl->backend->set_position(position); result < 0)
-    return std::unexpected(make_error(result));
+    return std::unexpected(vio::make_error(result));
   return {};
 }
 
-std::expected<point_t, error_t> window_t::position() const
+std::expected<point_t, vio::error_t> window_t::position() const
 {
   if (!*this)
-    return std::unexpected(make_error(errc::canceled));
+    return std::unexpected(vio::make_error(vio::errc::canceled));
   auto position = _impl->backend->position();
   if (!position)
-    return std::unexpected(make_error(position.error()));
+    return std::unexpected(vio::make_error(position.error()));
   return *position;
 }
 
@@ -693,4 +693,4 @@ void window_t::request_frame()
   if (*this)
     _impl->on_damage();
 }
-} // namespace vio::gui
+} // namespace vui

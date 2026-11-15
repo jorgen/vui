@@ -27,16 +27,16 @@ Copyright (c) 2026 Jørgen Lind
 #include <vector>
 
 #include <vio/event_loop.h>
-#include <vio/gui/gui.h>
-#include <vio/gui/ui/ui.h>
+#include <vui/vui.h>
+#include <vui/ui/ui.h>
 #include <vio/operation/sleep.h>
 #include <vio/task.h>
 
 #include "gui_test_helpers.h"
 
 using namespace std::chrono_literals;
-namespace gui = vio::gui;
-namespace ui = vio::gui::ui;
+namespace gui = vui;
+namespace ui = vui::ui;
 
 namespace
 {
@@ -44,21 +44,21 @@ constexpr ui::color_t red{1, 0, 0, 1};
 constexpr ui::color_t green{0, 1, 0, 1};
 constexpr ui::color_t grey{0.5f, 0.5f, 0.5f, 1};
 
-gui::display_t open_null(vio::event_loop_t &loop)
+vui::display_t open_null(vio::event_loop_t &loop)
 {
-  gui::display_config_t config;
+  vui::display_config_t config;
   config.backend = "null";
   config.frame_interval_ns = std::chrono::nanoseconds(2ms).count();
-  auto display = gui::display_t::open(loop, config);
+  auto display = vui::display_t::open(loop, config);
   REQUIRE(display.has_value());
   return std::move(*display);
 }
 
-void click(gui::window_t &window, gui::point_t at)
+void click(vui::window_t &window, vui::point_t at)
 {
-  window.impl()->on_input(gui::pointer_move_event_t{at});
-  window.impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, true, at});
-  window.impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, false, at});
+  window.impl()->on_input(vui::pointer_move_event_t{at});
+  window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, at});
+  window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, at});
 }
 
 // Long enough for the pointer events to be delivered, the behaviours to run and a frame to follow.
@@ -108,7 +108,7 @@ TEST_CASE("ui: a press reaches the behaviour, and the view is rebuilt from the n
   run_gui_test(loop, [](vio::event_loop_t &loop, seen_t &seen) -> vio::task_t<void> {
     auto display = open_null(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {640, 480}});
+      auto window = vui::window_t::create(display, {.size = {640, 480}});
       REQUIRE(window.has_value());
       counter_t counter;
       auto on_layout = [&seen](std::span<const ui::draw_item_t> items) {
@@ -152,14 +152,14 @@ TEST_CASE("ui: a press released off the box it started on is abandoned")
   run_gui_test(loop, [](vio::event_loop_t &loop, int &count, bool &held_while_down) -> vio::task_t<void> {
     auto display = open_null(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {640, 480}});
+      auto window = vui::window_t::create(display, {.size = {640, 480}});
       counter_t counter;
       auto running = ui::run(*window, counter);
       co_await settle(loop);
-      window->impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, true, {90, 30}});
+      window->impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, {90, 30}});
       co_await settle(loop);
       held_while_down = counter.inc.held();
-      window->impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, false, {400, 300}});
+      window->impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, {400, 300}});
       co_await settle(loop);
       count = counter.count;
       window->close();
@@ -194,7 +194,7 @@ TEST_CASE("ui: an on_press handler in the literal runs, and its component is reb
   run_gui_test(loop, [](vio::event_loop_t &loop, int &presses, int &views) -> vio::task_t<void> {
     auto display = open_null(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {640, 480}});
+      auto window = vui::window_t::create(display, {.size = {640, 480}});
       handler_t handler;
       auto running = ui::run(*window, handler);
       co_await settle(loop);
@@ -243,7 +243,7 @@ TEST_CASE("ui: only the component that changed re-runs its view")
   run_gui_test(loop, [](vio::event_loop_t &loop, seen_t &seen) -> vio::task_t<void> {
     auto display = open_null(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {640, 480}});
+      auto window = vui::window_t::create(display, {.size = {640, 480}});
       pair_t pair;
       auto on_layout = [&seen](std::span<const ui::draw_item_t> items) {
         if (items.size() == 6)
@@ -252,13 +252,13 @@ TEST_CASE("ui: only the component that changed re-runs its view")
       auto running = ui::run(*window, pair, {.on_layout = on_layout});
       co_await settle(loop);
       // Move the pointer away first, so hovering does not count as a change of its own.
-      window->impl()->on_input(gui::pointer_move_event_t{{600, 400}});
+      window->impl()->on_input(vui::pointer_move_event_t{{600, 400}});
       co_await settle(loop);
       const int left = pair.left.views;
       const int right = pair.right.views;
       const int parent = pair.views;
-      window->impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, true, {90, 30}});
-      window->impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, false, {90, 30}});
+      window->impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, {90, 30}});
+      window->impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, {90, 30}});
       co_await settle(loop);
       seen.left = pair.left.views - left;
       seen.right = pair.right.views - right;
@@ -354,7 +354,7 @@ TEST_CASE("ui: unmounting a component ends every behaviour in its scope")
   run_gui_test(loop, [](vio::event_loop_t &loop, seen_t &seen) -> vio::task_t<void> {
     auto display = open_null(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {640, 480}});
+      auto window = vui::window_t::create(display, {.size = {640, 480}});
       parent_t parent;
       parent.child.ticker_gone = &seen.ticker_gone;
       parent.child.listener_ended = &seen.listener_ended;
@@ -407,7 +407,7 @@ TEST_CASE("ui: closing the window resolves an operation started with the scope's
     [](vio::event_loop_t &loop, bool &cancelled) -> vio::task_t<void> {
       auto display = open_null(loop);
       {
-        auto window = gui::window_t::create(display, {.size = {640, 480}});
+        auto window = vui::window_t::create(display, {.size = {640, 480}});
         auto running = ui::run(*window, sleeper_t{&cancelled});
         co_await settle(loop);
         window->close();
@@ -475,7 +475,7 @@ TEST_CASE("ui: spawn runs the new behaviour to its first suspension before retur
   run_gui_test(loop, [](vio::event_loop_t &loop, std::vector<std::string> &order) -> vio::task_t<void> {
     auto display = open_null(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {640, 480}});
+      auto window = vui::window_t::create(display, {.size = {640, 480}});
       auto running = ui::run(*window, ordered_t{&order});
       co_await settle(loop);
       window->close();
@@ -493,7 +493,7 @@ TEST_CASE("ui: a behaviour woken by something other than the ui rebuilds its vie
   run_gui_test(loop, [](vio::event_loop_t &loop, std::vector<int> &shown) -> vio::task_t<void> {
     auto display = open_null(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {640, 480}});
+      auto window = vui::window_t::create(display, {.size = {640, 480}});
       ticker_t clock;
       auto running = ui::run(*window, clock);
       (void)co_await vio::sleep(loop, 100ms);

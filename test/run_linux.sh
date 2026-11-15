@@ -19,11 +19,11 @@ ASAN_OPTIONS="detect_leaks=0${ASAN_OPTIONS:+:$ASAN_OPTIONS}" "$binary" -tc="gl:*
 examples=$(dirname "$binary")
 export ASAN_OPTIONS="detect_leaks=0${ASAN_OPTIONS:+:$ASAN_OPTIONS}"
 for backend in x11 wayland; do
-  export VIO_GUI_BACKEND=$backend
-  "$examples/vio_gui_hello" 20
-  "$examples/vio_gui_input_echo" 300
-  "$examples/vio_gui_windows_and_network" 1300
-  if [ -x "$examples/vio_gui_vulkan_clear" ]; then
-    "$examples/vio_gui_vulkan_clear" 30
+  export VUI_BACKEND=$backend
+  "$examples/vui_hello" 20
+  "$examples/vui_input_echo" 300
+  "$examples/vui_windows_and_network" 1300
+  if [ -x "$examples/vui_vulkan_clear" ]; then
+    "$examples/vui_vulkan_clear" 30
   fi
 done

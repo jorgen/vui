@@ -52,9 +52,9 @@ Copyright (c) 2026 Jørgen Lind
 #include <vio/operation/sleep.h>
 #include <vio/task.h>
 
-#include "vio/gui/gui.h"
+#include "vui/vui.h"
 
-namespace vio::gui::ui
+namespace vui::ui
 {
 class scope_t;
 class pressable_t;
@@ -65,9 +65,9 @@ namespace detail
 class runtime_t;
 struct slot_t;
 struct font_data_t;
-using gui::detail::value_waiter_t;
-using gui::detail::waiter_list_t;
-using gui::detail::waiter_t;
+using vui::detail::value_waiter_t;
+using vui::detail::waiter_list_t;
+using vui::detail::waiter_t;
 } // namespace detail
 
 struct color_t
@@ -1178,7 +1178,7 @@ public:
   // The window the component is shown in, for what the toolkit does not wrap: keys, text, the
   // pointer itself. Its positions are in the window system's units; to_logical() makes them layout
   // units, which is what everything in a view is in.
-  [[nodiscard]] gui::window_t &window() const noexcept;
+  [[nodiscard]] vui::window_t &window() const noexcept;
   [[nodiscard]] point_t to_logical(point_t position) const noexcept;
   // The window's size in layout units, as of the last frame.
   [[nodiscard]] extent_t viewport() const noexcept;
@@ -1839,4 +1839,4 @@ template <component C>
 {
   return detail::run_owned<std::remove_cvref_t<C>>(window, std::move(root), std::move(config));
 }
-} // namespace vio::gui::ui
+} // namespace vui::ui

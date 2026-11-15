@@ -33,8 +33,8 @@ Copyright (c) 2026 Jørgen Lind
 
 #include <vio/operation/fd_watch.h>
 
-#include "vio/gui/backends.h"
-#include "vio/gui/gui.h"
+#include "vui/backends.h"
+#include "vui/vui.h"
 
 #include <X11/XKBlib.h>
 #include <X11/Xatom.h>
@@ -44,7 +44,7 @@ Copyright (c) 2026 Jørgen Lind
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
 
-namespace vio::gui::detail
+namespace vui::detail
 {
 namespace
 {
@@ -244,7 +244,7 @@ public:
     XSetErrorHandler(&ignore_x_error);
     display = XOpenDisplay(nullptr);
     if (!display)
-      return errc::no_such_device;
+      return vio::errc::no_such_device;
     screen = DefaultScreen(display);
     root = RootWindow(display, screen);
     const char *names[] = {"WM_PROTOCOLS", "WM_DELETE_WINDOW", "_NET_WM_NAME", "UTF8_STRING", "_NET_WM_STATE", "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ", "CLIPBOARD", "TARGETS", "VIO_SELECTION", "_MOTIF_WM_HINTS", "_NET_ACTIVE_WINDOW", "INCR"};
@@ -513,7 +513,7 @@ private:
       {
         if (data)
           XFree(data);
-        impl.clipboard_arrived(std::unexpected(errc::not_supported));
+        impl.clipboard_arrived(std::unexpected(vio::errc::not_supported));
         return;
       }
       std::string text;
@@ -576,7 +576,7 @@ int x11_window_t::create(const window_config_t &config)
   _visual = XVisualIDFromVisual(visual);
   _handle = XCreateWindow(dpy, _display.root, 0, 0, static_cast<unsigned>(std::max(1, config.size.width)), static_cast<unsigned>(std::max(1, config.size.height)), 0, depth, InputOutput, visual, mask, &attributes);
   if (!_handle)
-    return errc::out_of_memory;
+    return vio::errc::out_of_memory;
   _display.add(_handle, this);
 
   Atom protocols[] = {_display.wm_delete};
@@ -817,7 +817,7 @@ std::expected<point_t, int> x11_window_t::position() const
   int y = 0;
   Window child = 0;
   if (!XTranslateCoordinates(_display.display, _handle, _display.root, 0, 0, &x, &y, &child))
-    return std::unexpected(errc::io_error);
+    return std::unexpected(vio::errc::io_error);
   return point_t{static_cast<double>(x), static_cast<double>(y)};
 }
 
@@ -915,4 +915,4 @@ std::expected<std::unique_ptr<display_backend_t>, int> make_x11_backend(display_
     return std::unexpected(result);
   return made;
 }
-} // namespace vio::gui::detail
+} // namespace vui::detail

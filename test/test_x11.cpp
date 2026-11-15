@@ -20,7 +20,7 @@ Copyright (c) 2026 Jørgen Lind
   THE SOFTWARE.
 */
 
-#if defined(VIO_GUI_HAVE_X11)
+#if defined(VUI_HAVE_X11)
 
 #include <doctest/doctest.h>
 
@@ -30,7 +30,7 @@ Copyright (c) 2026 Jørgen Lind
 #include <vector>
 
 #include <vio/event_loop.h>
-#include <vio/gui/gui.h>
+#include <vui/vui.h>
 #include <vio/operation/sleep.h>
 #include <vio/task.h>
 
@@ -41,7 +41,7 @@ Copyright (c) 2026 Jørgen Lind
 #include <X11/keysym.h>
 
 using namespace std::chrono_literals;
-namespace gui = vio::gui;
+namespace gui = vui;
 
 namespace
 {
@@ -54,9 +54,9 @@ bool x11_available()
   return true;
 }
 
-gui::display_t open_x11(vio::event_loop_t &loop)
+vui::display_t open_x11(vio::event_loop_t &loop)
 {
-  auto display = gui::display_t::open(loop, {.backend = "x11"});
+  auto display = vui::display_t::open(loop, {.backend = "x11"});
   REQUIRE(display.has_value());
   CHECK(std::string(display->backend_name()) == "x11");
   return std::move(*display);
@@ -106,14 +106,14 @@ TEST_CASE("x11: a mapped window delivers its first frame at the size asked for")
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_x11(loop);
     {
-      auto window = gui::window_t::create(display, {.title = "first frame", .size = {320, 200}});
+      auto window = vui::window_t::create(display, {.title = "first frame", .size = {320, 200}});
       REQUIRE(window.has_value());
       auto frame = co_await window->frame();
       REQUIRE(frame.has_value());
-      CHECK(frame->framebuffer == gui::extent_t{320, 200});
+      CHECK(frame->framebuffer == vui::extent_t{320, 200});
       CHECK(window->visible());
       auto native = window->native();
-      CHECK(native.platform == gui::platform_t::x11);
+      CHECK(native.platform == vui::platform_t::x11);
       CHECK(native.id != 0);
     }
     loop.stop();
@@ -128,18 +128,18 @@ TEST_CASE("x11: a size change comes back as a resize")
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_x11(loop);
     {
-      auto window = gui::window_t::create(display, {.size = {200, 200}});
+      auto window = vui::window_t::create(display, {.size = {200, 200}});
       co_await window->frame();
-      auto sizes = window->subscribe<gui::resize_event_t>();
+      auto sizes = window->subscribe<vui::resize_event_t>();
       REQUIRE(window->set_size({410, 270}).has_value());
       for (;;)
       {
         auto resized = co_await sizes;
         REQUIRE(resized.has_value());
-        if (resized->size == gui::extent_t{410, 270})
+        if (resized->size == vui::extent_t{410, 270})
           break;
       }
-      CHECK(window->framebuffer_size() == gui::extent_t{410, 270});
+      CHECK(window->framebuffer_size() == vui::extent_t{410, 270});
       auto frame = co_await window->frame();
       CHECK(frame->damaged);
     }
@@ -155,10 +155,10 @@ TEST_CASE("x11: WM_DELETE_WINDOW from another client is a close request")
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
     auto display = open_x11(loop);
     {
-      auto window = gui::window_t::create(display);
+      auto window = vui::window_t::create(display);
       co_await window->frame();
       other_client_t other;
-      auto requests = window->subscribe<gui::close_request_t>();
+      auto requests = window->subscribe<vui::close_request_t>();
       other.send_close(static_cast<Window>(window->native().id));
       auto request = co_await requests;
       CHECK(request.has_value());
@@ -172,13 +172,13 @@ TEST_CASE("x11: a key press yields a key event and its text")
   if (!x11_available())
     return;
   vio::event_loop_t loop;
-  std::vector<gui::window_event_t> events;
-  run_gui_test(loop, [](vio::event_loop_t &loop, std::vector<gui::window_event_t> &events) -> vio::task_t<void> {
+  std::vector<vui::window_event_t> events;
+  run_gui_test(loop, [](vio::event_loop_t &loop, std::vector<vui::window_event_t> &events) -> vio::task_t<void> {
     auto display = open_x11(loop);
     {
-      auto window = gui::window_t::create(display);
+      auto window = vui::window_t::create(display);
       co_await window->frame();
-      auto keys = window->subscribe<gui::key_event_t, gui::text_event_t>();
+      auto keys = window->subscribe<vui::key_event_t, vui::text_event_t>();
       other_client_t other;
       const auto handle = static_cast<Window>(window->native().id);
       other.send_key(handle, XK_q, true);
@@ -193,10 +193,10 @@ TEST_CASE("x11: a key press yields a key event and its text")
     loop.stop();
   }(loop, events));
   REQUIRE(events.size() == 3);
-  CHECK(std::get<gui::key_event_t>(events[0]).key == gui::key_t::q);
-  CHECK(std::get<gui::key_event_t>(events[0]).pressed);
-  CHECK(std::get<gui::text_event_t>(events[1]).text == "q");
-  CHECK(!std::get<gui::key_event_t>(events[2]).pressed);
+  CHECK(std::get<vui::key_event_t>(events[0]).key == vui::key_t::q);
+  CHECK(std::get<vui::key_event_t>(events[0]).pressed);
+  CHECK(std::get<vui::text_event_t>(events[1]).text == "q");
+  CHECK(!std::get<vui::key_event_t>(events[2]).pressed);
 }
 
 TEST_CASE("x11: clipboard text moves between two displays")
@@ -224,17 +224,17 @@ TEST_CASE("x11: frames follow the clock while shown and stop while hidden")
     return;
   vio::event_loop_t loop;
   run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
-    auto display = gui::display_t::open(loop, {.backend = "x11", .frame_interval_ns = std::chrono::nanoseconds(10ms).count()});
+    auto display = vui::display_t::open(loop, {.backend = "x11", .frame_interval_ns = std::chrono::nanoseconds(10ms).count()});
     REQUIRE(display.has_value());
     {
-      auto window = gui::window_t::create(*display);
+      auto window = vui::window_t::create(*display);
       for (int i = 0; i < 5; ++i)
         REQUIRE((co_await window->frame()).has_value());
       window->hide();
       while (window->visible())
         co_await vio::sleep(loop, 5ms);
       bool hidden_frame = false;
-      auto watcher = [](gui::window_t &window, bool &hidden_frame) -> vio::task_t<void> {
+      auto watcher = [](vui::window_t &window, bool &hidden_frame) -> vio::task_t<void> {
         auto frame = co_await window.frame();
         hidden_frame = frame.has_value() && !window.visible();
       }(*window, hidden_frame);
@@ -257,7 +257,7 @@ TEST_CASE("x11: timers keep running beside an open window")
   run_gui_test(loop, [](vio::event_loop_t &loop, int &ticks) -> vio::task_t<void> {
     auto display = open_x11(loop);
     {
-      auto window = gui::window_t::create(display);
+      auto window = vui::window_t::create(display);
       co_await window->frame();
       for (int i = 0; i < 10; ++i)
       {

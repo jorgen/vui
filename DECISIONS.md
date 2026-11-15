@@ -1,11 +1,11 @@
 # Decisions
 
-Each entry is a choice made while building vio gui, and why. `PLAN.md` describes the design.
+Each entry is a choice made while building vui, and why. `PLAN.md` describes the design.
 
 ## G1. The library lives in the vio repository
 
 It needs hooks in the loop core (G2) that change with it, and one CI run then checks both. It is
-its own target, `vio_gui`, in its own directory, so it can move to its own repository once the
+its own target, `vui`, in its own directory, so it can move to its own repository once the
 core hooks settle.
 
 ## G2. A host wait, not a host loop
@@ -42,7 +42,7 @@ draws with Vulkan does not need libGL, and one that only opens windows needs nei
 libX11 and libwayland-client are linked. Both are present on any desktop that can show a window,
 and loading them at run time would add a table of some two hundred function pointers for no
 gain. The backend is chosen at run time: Wayland when `WAYLAND_DISPLAY` is set, X11 otherwise,
-and `VIO_GUI_BACKEND=x11|wayland` overrides.
+and `VUI_BACKEND=x11|wayland` overrides.
 
 ## G8. EGL for OpenGL on Linux
 
@@ -236,7 +236,7 @@ hinting. Its strength, one atlas entry for every size, matters for zoomable or t
 which a UI rarely has. FreeType gives hinting and an outline rasterizer that also renders icons;
 HarfBuzz gives shaping, without which only Latin text is right. FreeType is built with
 `FT_DISABLE_HARFBUZZ=ON` so the two do not depend on each other. Both are dependencies of
-`vio_gui_ui` only, through cmake-dep with the usual `VIO_USE_SYSTEM_*` toggles; neither the vio
+`vui_ui` only, through cmake-dep with the usual `VIO_USE_SYSTEM_*` toggles; neither the vio
 core nor the window layer sees them. Blending is in linear space, because without it light text on
 dark is too thin and dark text on light too heavy.
 
@@ -318,13 +318,13 @@ Downloading slangc was refused in the session that wrote the renderer, and nothi
 machine compiled Slang. RenderDoc's `glslangValidator` 16.2.0 was installed, so the two entry
 points were transcribed to GLSL by hand -- same attribute locations, same push-constant block, same
 arithmetic -- and compiled with that; the transcription is not in the tree. The header says so in
-its first lines. Regenerate it with `cmake --build <dir> --target vio_gui_shaders` once slangc is
+its first lines. Regenerate it with `cmake --build <dir> --target vui_shaders` once slangc is
 on `PATH`, then run `test_ui_render.cpp`: the offscreen test reads back pixels and is what proves
 the Slang output matches. The renderer reads each module's entry point name out of its
 `OpEntryPoint`, so slangc keeping `vertexMain` where glslang writes `main` needs no change. The
 target builds for `spirv_1_0` because the renderer asks for Vulkan 1.0.
 
-**Resolved.** `-DVIO_GUI_FETCH_SLANG=ON` fetches slangc 2026.21's release archive for the host
+**Resolved.** `-DVUI_FETCH_SLANG=ON` fetches slangc 2026.21's release archive for the host
 through cmake-dep (one package per host system and processor, since the archives are prebuilt;
 off by default, so neither the lockfile nor CI fetches it), and `ui_spirv.h` is now its output.
 It found one difference the transcription hid: Slang's `SV_VertexID` is zero-based as in
@@ -394,7 +394,7 @@ FreeType renders with light hinting -- vertical only -- because HarfBuzz's advan
 full hinting would change widths under them. Both are fetched by cmake-dep: FreeType 2.15.0 with
 HarfBuzz, zlib, bzip2, PNG and Brotli off; HarfBuzz 15.1.0 compiled from its `harfbuzz.cc`
 amalgamation with its own OpenType font functions, so neither sees the other. Both are private to
-`vio_gui_ui`.
+`vui_ui`.
 
 The atlas is shelf-packed, starts at 512 square and doubles to 4096; full at that size it is emptied
 and the frame lays everything out again once, since what was laid out before names rectangles that
@@ -563,13 +563,13 @@ is what a profile of that build pointed at:
 The stress test also found a shutdown race the examples had always had: the runtime read the event
 loop through the window, and a behaviour woken by its own timer after the window closed -- before
 the frame loop noticed -- asked for the loop through a window that no longer had one. The runtime
-now keeps the loop from construction. `vio_gui_ui_counter`'s timed exit failed about two runs in
+now keeps the loop from construction. `vui_ui_counter`'s timed exit failed about two runs in
 five before and none in twenty after; a unit test on the null backend did not reproduce it, so
 there is none.
 
 ## G46. Widgets are controlled components; focus and popups are the runtime's
 
-`vio/gui/ui/widgets.h` has the first widgets: `button_t`, `checkbox_t` and `combobox_t`. Each is an
+`vui/ui/widgets.h` has the first widgets: `button_t`, `checkbox_t` and `combobox_t`. Each is an
 ordinary component built only from what `ui.h` offers any program, which keeps them honest as a
 worked example and kept the toolkit changes to the two things a combobox could not do without.
 
@@ -610,7 +610,7 @@ instead), focus that follows the pointer into a menu, and text input.
 ## G47. A live resize draws before WM_SIZE returns; what is left is the driver's
 
 Content trailed the border while a window was dragged larger on Windows. Traced on an RX 5700 XT,
-Release, dragging `vio_gui_ui_widgets` by its right edge:
+Release, dragging `vui_ui_widgets` by its right edge:
 
 - **Every other resize was drawn a refresh late.** `WM_SIZE` ran one nested turn, but a UI's frame
   loop waits on its own change signal, which wakes through the loop's deferred queue, and a turn

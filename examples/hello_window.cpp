@@ -28,12 +28,12 @@ Copyright (c) 2026 Jørgen Lind
 #include <variant>
 
 #include <vio/event_loop.h>
-#include <vio/gui/context.h>
-#include <vio/gui/gui.h>
+#include <vui/context.h>
+#include <vui/vui.h>
 #include <vio/operation/sleep.h>
 #include <vio/task.h>
 
-namespace gui = vio::gui;
+namespace gui = vui;
 using namespace std::chrono_literals;
 
 struct state_t
@@ -42,9 +42,9 @@ struct state_t
   float hue = 0;
 };
 
-vio::task_t<void> draw(gui::window_t &window, state_t &state, int frame_limit)
+vio::task_t<void> draw(vui::window_t &window, state_t &state, int frame_limit)
 {
-  auto context = gui::gl_context_t::create(window, {.major = 3, .minor = 2});
+  auto context = vui::gl_context_t::create(window, {.major = 3, .minor = 2});
   if (!context)
   {
     std::fprintf(stderr, "no OpenGL: %s\n", context.error().msg.c_str());
@@ -71,21 +71,21 @@ vio::task_t<void> draw(gui::window_t &window, state_t &state, int frame_limit)
 }
 
 // Each subscription ends when the window closes, so these loops need no flag of their own.
-vio::task_t<void> read_keys(gui::window_t &window, state_t &state)
+vio::task_t<void> read_keys(vui::window_t &window, state_t &state)
 {
-  auto keys = window.subscribe<gui::key_event_t, gui::text_event_t>();
+  auto keys = window.subscribe<vui::key_event_t, vui::text_event_t>();
   while (auto event = co_await keys)
   {
-    if (auto *key = std::get_if<gui::key_event_t>(&*event); key && key->pressed && key->key == gui::key_t::escape)
+    if (auto *key = std::get_if<vui::key_event_t>(&*event); key && key->pressed && key->key == vui::key_t::escape)
       state.done = true;
-    else if (auto *text = std::get_if<gui::text_event_t>(&*event))
+    else if (auto *text = std::get_if<vui::text_event_t>(&*event))
       std::printf("typed %s\n", text->text.c_str());
   }
 }
 
-vio::task_t<void> read_clicks(gui::window_t &window, state_t &state)
+vio::task_t<void> read_clicks(vui::window_t &window, state_t &state)
 {
-  auto buttons = window.subscribe<gui::pointer_button_event_t>();
+  auto buttons = window.subscribe<vui::pointer_button_event_t>();
   while (auto button = co_await buttons)
   {
     if (button->pressed)
@@ -93,16 +93,16 @@ vio::task_t<void> read_clicks(gui::window_t &window, state_t &state)
   }
 }
 
-vio::task_t<void> follow_size(gui::window_t &window)
+vio::task_t<void> follow_size(vui::window_t &window)
 {
-  auto sizes = window.subscribe<gui::resize_event_t>();
+  auto sizes = window.subscribe<vui::resize_event_t>();
   while (auto resized = co_await sizes)
     std::printf("size %dx%d, %dx%d pixels\n", resized->size.width, resized->size.height, resized->framebuffer.width, resized->framebuffer.height);
 }
 
 vio::task_t<void> run(vio::event_loop_t &loop, int frame_limit)
 {
-  auto display = gui::display_t::open(loop);
+  auto display = vui::display_t::open(loop);
   if (!display)
   {
     std::fprintf(stderr, "no display: %s\n", display.error().msg.c_str());
@@ -111,7 +111,7 @@ vio::task_t<void> run(vio::event_loop_t &loop, int frame_limit)
   }
   std::printf("window system: %s\n", display->backend_name());
   {
-    auto window = gui::window_t::create(*display, {.title = "hello vio", .size = {640, 400}});
+    auto window = vui::window_t::create(*display, {.title = "hello vio", .size = {640, 400}});
     if (!window)
     {
       loop.stop();
@@ -122,8 +122,8 @@ vio::task_t<void> run(vio::event_loop_t &loop, int frame_limit)
     auto keys = read_keys(*window, state);
     auto clicks = read_clicks(*window, state);
     auto sizes = follow_size(*window);
-    auto closing = [](gui::window_t &window, state_t &state) -> vio::task_t<void> {
-      auto requests = window.subscribe<gui::close_request_t>();
+    auto closing = [](vui::window_t &window, state_t &state) -> vio::task_t<void> {
+      auto requests = window.subscribe<vui::close_request_t>();
       if (co_await requests)
         state.done = true;
     }(*window, state);

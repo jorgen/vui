@@ -1,0 +1,7 @@
+.idea
+.vs/
+.cache/
+3rdparty/
+build*/
+cmake-build-*/
+*.swp

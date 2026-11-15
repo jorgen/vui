@@ -20,11 +20,11 @@ Copyright (c) 2026 Jørgen Lind
   THE SOFTWARE.
 */
 
-#include "vio/gui/ui/widgets.h"
+#include "vui/ui/widgets.h"
 
 #include <algorithm>
 
-namespace vio::gui::ui
+namespace vui::ui
 {
 namespace
 {
@@ -329,4 +329,4 @@ behaviour_t combobox_t::behave(scope_t &scope)
     }
   }
 }
-} // namespace vio::gui::ui
+} // namespace vui::ui

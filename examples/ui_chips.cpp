@@ -32,7 +32,7 @@ Copyright (c) 2026 Jørgen Lind
 // tile alone. A tile out
 // of view draws nothing; one in view holds its own chunk, which panning only moves.
 //
-// `vio_gui_ui_chips --bench` drives it through five workloads and prints what each frame cost.
+// `vui_ui_chips --bench` drives it through five workloads and prints what each frame cost.
 
 #include <algorithm>
 #include <array>
@@ -48,13 +48,13 @@ Copyright (c) 2026 Jørgen Lind
 #include <vector>
 
 #include <vio/event_loop.h>
-#include <vio/gui/gui.h>
-#include <vio/gui/ui/ui.h>
+#include <vui/vui.h>
+#include <vui/ui/ui.h>
 #include <vio/operation/sleep.h>
 #include <vio/run.h>
 
-namespace gui = vio::gui;
-namespace ui = vio::gui::ui;
+namespace gui = vui;
+namespace ui = vui::ui;
 using namespace std::chrono_literals;
 
 namespace
@@ -329,7 +329,7 @@ struct scene_t
   float pan_y = 40;
   std::uint32_t selected = 0;
   int selected_tile = -1;
-  gui::extent_t viewport{1, 1};
+  vui::extent_t viewport{1, 1};
   bool bench = false;
 
   scene_t()
@@ -410,7 +410,7 @@ struct scene_t
 
   // The topmost chip under a window point: in the tile it falls in and the ones around it, since a
   // chip near a tile's edge can hang over into its neighbour.
-  bool hit(gui::point_t p, int &tile_index, std::size_t &chip_index) const
+  bool hit(vui::point_t p, int &tile_index, std::size_t &chip_index) const
   {
     const float sx = (float(p.x) - pan_x) / zoom;
     const float sy = (float(p.y) - pan_y) / zoom;
@@ -502,7 +502,7 @@ struct scene_t
     ++versions[std::size_t(selected_tile)];
   }
 
-  void zoom_about(gui::point_t p, float to)
+  void zoom_about(vui::point_t p, float to)
   {
     to = std::clamp(to, 0.1f, 24.0f);
     pan_x = float(p.x) - (float(p.x) - pan_x) * to / zoom;
@@ -520,19 +520,19 @@ struct scene_t
       (void)co_await scope.spawn(run_bench(scope));
       co_return;
     }
-    auto events = scope.window().subscribe<gui::pointer_move_event_t, gui::pointer_button_event_t, gui::scroll_event_t, gui::key_event_t, gui::text_event_t, gui::resize_event_t>();
+    auto events = scope.window().subscribe<vui::pointer_move_event_t, vui::pointer_button_event_t, vui::scroll_event_t, vui::key_event_t, vui::text_event_t, vui::resize_event_t>();
     enum class drag_t
     {
       none,
       pan,
       chip
     } drag = drag_t::none;
-    gui::point_t last;
+    vui::point_t last;
     float grab_x = 0;
     float grab_y = 0;
     while (auto event = co_await events)
     {
-      if (std::holds_alternative<gui::resize_event_t>(*event))
+      if (std::holds_alternative<vui::resize_event_t>(*event))
       {
         // The new size is laid out at the next frame; read it after.
         (void)co_await vio::sleep(scope.loop(), 30ms, scope.token());
@@ -540,7 +540,7 @@ struct scene_t
         continue;
       }
       viewport = scope.viewport();
-      if (auto *move = std::get_if<gui::pointer_move_event_t>(&*event))
+      if (auto *move = std::get_if<vui::pointer_move_event_t>(&*event))
       {
         const auto p = scope.to_logical(move->position);
         if (drag == drag_t::pan)
@@ -552,9 +552,9 @@ struct scene_t
           move_selected((float(p.x) - pan_x) / zoom - grab_x, (float(p.y) - pan_y) / zoom - grab_y);
         last = p;
       }
-      else if (auto *button = std::get_if<gui::pointer_button_event_t>(&*event))
+      else if (auto *button = std::get_if<vui::pointer_button_event_t>(&*event))
       {
-        if (button->button != gui::button_t::left)
+        if (button->button != vui::button_t::left)
           continue;
         const auto p = scope.to_logical(button->position);
         last = p;
@@ -588,22 +588,22 @@ struct scene_t
         else
           drag = drag_t::pan;
       }
-      else if (auto *scroll = std::get_if<gui::scroll_event_t>(&*event))
+      else if (auto *scroll = std::get_if<vui::scroll_event_t>(&*event))
         zoom_about(scope.to_logical(scroll->position), zoom * std::pow(1.15f, float(scroll->dy)));
-      else if (auto *key = std::get_if<gui::key_event_t>(&*event))
+      else if (auto *key = std::get_if<vui::key_event_t>(&*event))
       {
         if (!key->pressed)
           continue;
-        if (key->key == gui::key_t::backspace)
+        if (key->key == vui::key_t::backspace)
           edit({}, true);
-        else if (key->key == gui::key_t::escape && selected_tile >= 0)
+        else if (key->key == vui::key_t::escape && selected_tile >= 0)
         {
           ++versions[std::size_t(selected_tile)];
           selected = 0;
           selected_tile = -1;
         }
       }
-      else if (auto *text = std::get_if<gui::text_event_t>(&*event))
+      else if (auto *text = std::get_if<vui::text_event_t>(&*event))
       {
         if (!text->text.empty() && static_cast<unsigned char>(text->text[0]) >= 0x20)
           edit(text->text, false);
@@ -733,19 +733,19 @@ int main(int argc, char **argv)
   return vio::run(
     [bench, limit, start_zoom](vio::event_loop_t &loop) -> vio::task_t<int>
     {
-      auto display = gui::display_t::open(loop);
+      auto display = vui::display_t::open(loop);
       if (!display)
       {
         std::fprintf(stderr, "no display: %s\n", display.error().msg.c_str());
         co_return 1;
       }
       {
-        auto window = gui::window_t::create(*display, {.title = "vio ui: 200,000 chips", .size = {1400, 900}});
+        auto window = vui::window_t::create(*display, {.title = "vio ui: 200,000 chips", .size = {1400, 900}});
         if (!window)
           co_return 1;
-        auto closing = [](gui::window_t &window, std::chrono::milliseconds limit) -> vio::task_t<void>
+        auto closing = [](vui::window_t &window, std::chrono::milliseconds limit) -> vio::task_t<void>
         {
-          auto requests = window.subscribe<gui::close_request_t>();
+          auto requests = window.subscribe<vui::close_request_t>();
           if (limit.count() > 0)
             (void)co_await vio::sleep(*window.impl()->display.loop, limit);
           else

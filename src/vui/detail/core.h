@@ -43,9 +43,9 @@ Copyright (c) 2026 Jørgen Lind
 #include <vio/loop_hooks.h>
 #include <vio/operation/timer.h>
 
-#include "vio/gui/events.h"
+#include "vui/events.h"
 
-namespace vio::gui
+namespace vui
 {
 enum class platform_t : std::uint8_t
 {
@@ -87,7 +87,7 @@ struct display_config_t
 
 namespace detail
 {
-[[nodiscard]] inline vio::timer_t make_timer(event_loop_t &loop)
+[[nodiscard]] inline vio::timer_t make_timer(vio::event_loop_t &loop)
 {
   return std::move(*vio::timer_create(loop));
 }
@@ -289,7 +289,7 @@ using backend_factory_t = std::expected<std::unique_ptr<display_backend_t>, int>
 class frame_clock_t
 {
 public:
-  frame_clock_t(event_loop_t &loop, std::int64_t interval_ns, void (*fire)(void *), void *context);
+  frame_clock_t(vio::event_loop_t &loop, std::int64_t interval_ns, void (*fire)(void *), void *context);
   frame_clock_t(const frame_clock_t &) = delete;
   frame_clock_t &operator=(const frame_clock_t &) = delete;
 
@@ -300,7 +300,7 @@ public:
   }
 
 private:
-  event_loop_t &_loop;
+  vio::event_loop_t &_loop;
   vio::timer_t _timer;
   std::int64_t _interval;
   void (*_fire)(void *);
@@ -358,7 +358,7 @@ public:
 class display_impl_t
 {
 public:
-  display_impl_t(event_loop_t &loop, const display_config_t &config);
+  display_impl_t(vio::event_loop_t &loop, const display_config_t &config);
   display_impl_t(const display_impl_t &) = delete;
   display_impl_t &operator=(const display_impl_t &) = delete;
   ~display_impl_t();
@@ -376,7 +376,7 @@ public:
   void clipboard_arrived(std::expected<std::string, int> text) noexcept;
   void add_clipboard_waiter(value_waiter_t<std::string> &waiter);
 
-  event_loop_t *loop;
+  vio::event_loop_t *loop;
   display_config_t config;
   std::unique_ptr<display_backend_t> backend;
   std::shared_ptr<void> gl_state;
@@ -386,9 +386,9 @@ private:
   void pump();
   void finish();
 
-  before_block_hook_t _dispatch_hook;
-  before_block_hook_t _pump_hook;
-  deferred_call_t _finish;
+  vio::before_block_hook_t _dispatch_hook;
+  vio::before_block_hook_t _pump_hook;
+  vio::deferred_call_t _finish;
   waiter_list_t _ready;
   waiter_list_t _clipboard_waiters;
   std::vector<std::expected<std::string, int>> _clipboard_results;
@@ -525,4 +525,4 @@ private:
 };
 
 } // namespace detail
-} // namespace vio::gui
+} // namespace vui

@@ -30,17 +30,17 @@ Copyright (c) 2026 Jørgen Lind
 #include <vector>
 
 #include <vio/event_loop.h>
-#include <vio/gui/gui.h>
-#include <vio/gui/ui/ui.h>
-#include <vio/gui/ui/widgets.h>
+#include <vui/vui.h>
+#include <vui/ui/ui.h>
+#include <vui/ui/widgets.h>
 #include <vio/operation/sleep.h>
 #include <vio/task.h>
 
 #include "gui_test_helpers.h"
 
 using namespace std::chrono_literals;
-namespace gui = vio::gui;
-namespace ui = vio::gui::ui;
+namespace gui = vui;
+namespace ui = vui::ui;
 
 namespace
 {
@@ -51,7 +51,7 @@ struct seen_t
   const ui::pressable_t *source = nullptr;
 };
 
-using act_t = std::function<vio::task_t<void>(vio::event_loop_t &, gui::window_t &)>;
+using act_t = std::function<vio::task_t<void>(vio::event_loop_t &, vui::window_t &)>;
 
 template <typename C>
 void drive(C &root, std::vector<seen_t> &seen, act_t act)
@@ -60,13 +60,13 @@ void drive(C &root, std::vector<seen_t> &seen, act_t act)
   run_gui_test(loop,
                [](vio::event_loop_t &loop, C &root, std::vector<seen_t> &seen, act_t act) -> vio::task_t<void>
                {
-                 gui::display_config_t display_config;
+                 vui::display_config_t display_config;
                  display_config.backend = "null";
                  display_config.frame_interval_ns = std::chrono::nanoseconds(2ms).count();
-                 auto display = gui::display_t::open(loop, display_config);
+                 auto display = vui::display_t::open(loop, display_config);
                  REQUIRE(display.has_value());
                  {
-                   auto window = gui::window_t::create(*display, {.size = {400, 300}});
+                   auto window = vui::window_t::create(*display, {.size = {400, 300}});
                    ui::run_config_t config;
                    config.on_layout = [&seen](std::span<const ui::draw_item_t> items)
                    {
@@ -89,22 +89,22 @@ vio::task_t<void> settle(vio::event_loop_t &loop)
   (void)co_await vio::sleep(loop, 40ms);
 }
 
-gui::point_t centre(const ui::rect_t &r)
+vui::point_t centre(const ui::rect_t &r)
 {
   return {r.x + r.width / 2.0, r.y + r.height / 2.0};
 }
 
-void click(gui::window_t &window, gui::point_t at)
+void click(vui::window_t &window, vui::point_t at)
 {
-  window.impl()->on_input(gui::pointer_move_event_t{at});
-  window.impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, true, at});
-  window.impl()->on_input(gui::pointer_button_event_t{gui::button_t::left, false, at});
+  window.impl()->on_input(vui::pointer_move_event_t{at});
+  window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, at});
+  window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, at});
 }
 
-void key(gui::window_t &window, gui::key_t k, gui::modifier_t modifiers = gui::modifier_t::none)
+void key(vui::window_t &window, vui::key_t k, vui::modifier_t modifiers = vui::modifier_t::none)
 {
-  window.impl()->on_input(gui::key_event_t{k, 0, modifiers, true});
-  window.impl()->on_input(gui::key_event_t{k, 0, modifiers, false});
+  window.impl()->on_input(vui::key_event_t{k, 0, modifiers, true});
+  window.impl()->on_input(vui::key_event_t{k, 0, modifiers, false});
 }
 
 // The rect of the first box reporting to `source`.
@@ -147,23 +147,23 @@ TEST_CASE("ui focus: Tab walks the focusable boxes in drawing order, and Space p
   } root;
   std::vector<seen_t> seen;
   drive(root, seen,
-        [&root](vio::event_loop_t &loop, gui::window_t &window) -> vio::task_t<void>
+        [&root](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
         {
           CHECK_FALSE(root.a.focused());
-          key(window, gui::key_t::tab);
+          key(window, vui::key_t::tab);
           co_await settle(loop);
           CHECK(root.a.focused());
           CHECK(root.a.focus_visible());
           // b is not focusable, so it is skipped.
-          key(window, gui::key_t::tab);
+          key(window, vui::key_t::tab);
           co_await settle(loop);
           CHECK_FALSE(root.a.focused());
           CHECK(root.c.focused());
-          key(window, gui::key_t::space);
+          key(window, vui::key_t::space);
           co_await settle(loop);
           CHECK(root.presses_c == 1);
           // Back round to a, and a click on c focuses it without a ring.
-          key(window, gui::key_t::tab, gui::modifier_t::shift);
+          key(window, vui::key_t::tab, vui::modifier_t::shift);
           co_await settle(loop);
           CHECK(root.a.focused());
           click(window, {100, 20});
@@ -218,7 +218,7 @@ TEST_CASE("ui popup: takes no room, is drawn last and kept in the window, and a 
   } root;
   std::vector<seen_t> seen;
   drive(root, seen,
-        [&](vio::event_loop_t &loop, gui::window_t &window) -> vio::task_t<void>
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
         {
           // The box after the popup sits right under the first: the popup took no room.
           CHECK(rect_of(seen, &root.under) == ui::rect_t{300, 20, 50, 20});
@@ -275,7 +275,7 @@ TEST_CASE("ui widgets: a checkbox asks to change and the parent decides; disable
   } root;
   std::vector<seen_t> seen;
   drive(root, seen,
-        [&](vio::event_loop_t &loop, gui::window_t &window) -> vio::task_t<void>
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
         {
           REQUIRE(!seen.empty());
           // The first hit-testable box is the whole checkbox, label and all.
@@ -293,13 +293,13 @@ TEST_CASE("ui widgets: a checkbox asks to change and the parent decides; disable
           co_await settle(loop);
           CHECK(root.on);
           CHECK(root.box.props.checked);
-          key(window, gui::key_t::space);
+          key(window, vui::key_t::space);
           co_await settle(loop);
           CHECK_FALSE(root.on);
           CHECK(root.changes == 2);
           CHECK_FALSE(root.enabled);
           click(window, centre(whole));
-          key(window, gui::key_t::space);
+          key(window, vui::key_t::space);
           co_await settle(loop);
           CHECK(root.changes == 2);
         });
@@ -337,7 +337,7 @@ TEST_CASE("ui widgets: a combobox opens over what follows, picks by pointer and 
   } root;
   std::vector<seen_t> seen;
   drive(root, seen,
-        [&](vio::event_loop_t &loop, gui::window_t &window) -> vio::task_t<void>
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
         {
           const auto after_rect = rect_of(seen, &root.after.press);
           REQUIRE(after_rect.width > 0);
@@ -380,25 +380,25 @@ TEST_CASE("ui widgets: a combobox opens over what follows, picks by pointer and 
 
           // The keyboard: it has focus from the click. Down changes it closed; Enter opens, Down
           // moves, Enter picks; Escape closes without picking.
-          key(window, gui::key_t::down);
+          key(window, vui::key_t::down);
           co_await settle(loop);
           CHECK(root.selected == 2);
-          key(window, gui::key_t::up);
-          key(window, gui::key_t::up);
+          key(window, vui::key_t::up);
+          key(window, vui::key_t::up);
           co_await settle(loop);
           CHECK(root.selected == 0);
-          key(window, gui::key_t::enter);
+          key(window, vui::key_t::enter);
           co_await settle(loop);
           CHECK(root.combo.open());
-          key(window, gui::key_t::down);
-          key(window, gui::key_t::down);
-          key(window, gui::key_t::enter);
+          key(window, vui::key_t::down);
+          key(window, vui::key_t::down);
+          key(window, vui::key_t::enter);
           co_await settle(loop);
           CHECK_FALSE(root.combo.open());
           CHECK(root.selected == 2);
-          key(window, gui::key_t::enter);
-          key(window, gui::key_t::up);
-          key(window, gui::key_t::escape);
+          key(window, vui::key_t::enter);
+          key(window, vui::key_t::up);
+          key(window, vui::key_t::escape);
           co_await settle(loop);
           CHECK_FALSE(root.combo.open());
           CHECK(root.selected == 2);

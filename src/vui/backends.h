@@ -22,9 +22,9 @@ Copyright (c) 2026 Jørgen Lind
 
 #pragma once
 
-#include "vio/gui/detail/core.h"
+#include "vui/detail/core.h"
 
-namespace vio::gui::detail
+namespace vui::detail
 {
 std::expected<std::unique_ptr<display_backend_t>, int> make_null_backend(display_impl_t &display);
 std::expected<std::unique_ptr<display_backend_t>, int> make_x11_backend(display_impl_t &display);
@@ -32,4 +32,4 @@ std::expected<std::unique_ptr<display_backend_t>, int> make_wayland_backend(disp
 std::expected<std::unique_ptr<display_backend_t>, int> make_win32_backend(display_impl_t &display);
 std::expected<std::unique_ptr<display_backend_t>, int> make_cocoa_backend(display_impl_t &display);
 void *cocoa_metal_layer(window_impl_t &window);
-} // namespace vio::gui::detail
+} // namespace vui::detail

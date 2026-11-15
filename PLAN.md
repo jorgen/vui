@@ -1,4 +1,4 @@
-# vio gui
+# vui
 
 A window library on the vio event loop. Windows, input and frames are awaited from coroutines on
 the same loop that runs sockets, timers and files. `DECISIONS.md` in this directory records each
@@ -21,11 +21,11 @@ choice and its reason.
 
 ```cpp
 vio::event_loop_t loop;
-auto display = vio::gui::display_t::open(loop);
-auto window = vio::gui::window_t::create(*display, {.title = "hello", .size = {800, 600}});
+auto display = vui::display_t::open(loop);
+auto window = vui::window_t::create(*display, {.title = "hello", .size = {800, 600}});
 
-auto draw = [](vio::gui::window_t &window) -> vio::task_t<void> {
-  auto gl = vio::gui::gl_context_t::create(window, {});
+auto draw = [](vui::window_t &window) -> vio::task_t<void> {
+  auto gl = vui::gl_context_t::create(window, {});
   while (auto frame = co_await window.frame())
   {
     gl->make_current();
@@ -34,14 +34,14 @@ auto draw = [](vio::gui::window_t &window) -> vio::task_t<void> {
   }
 }(*window);
 
-auto read_keys = [](vio::gui::window_t &window) -> vio::task_t<void> {
-  auto keys = window.subscribe<vio::gui::key_event_t, vio::gui::text_event_t>();
+auto read_keys = [](vui::window_t &window) -> vio::task_t<void> {
+  auto keys = window.subscribe<vui::key_event_t, vui::text_event_t>();
   while (auto event = co_await keys)
     handle(*event);
 }(*window);
 
-auto wait_close = [](vio::event_loop_t &loop, vio::gui::window_t &window) -> vio::task_t<void> {
-  auto requests = window.subscribe<vio::gui::close_request_t>();
+auto wait_close = [](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void> {
+  auto requests = window.subscribe<vui::close_request_t>();
   co_await requests;
   window.close();
   loop.stop();
@@ -70,7 +70,7 @@ exactly then.
 
 ## Examples
 
-`gui/examples/`, each built as `vio_gui_<name>`. Each takes an optional limit (frames or
+`gui/examples/`, each built as `vui_<name>`. Each takes an optional limit (frames or
 milliseconds) and quits after it, which is how CI runs them.
 
 | example | shows |
@@ -155,8 +155,8 @@ Neither OpenCL nor CUDA is linked or loaded by the library.
 
 ## UI toolkit
 
-A declarative toolkit on top of the window layer, in `vio/gui/ui/ui.h` and `src/ui.cpp` as its own
-target, `vio_gui_ui`, so the window layer stays free of any toolkit. Phase 6 is in;
+A declarative toolkit on top of the window layer, in `vui/ui/ui.h` and `src/ui.cpp` as its own
+target, `vui_ui`, so the window layer stays free of any toolkit. Phase 6 is in;
 `examples/ui_counter.cpp` and `test/test_ui.cpp` show it. It is not immediate mode. A UI is described with
 struct literals, and its behaviour is coroutines awaiting events.
 
@@ -231,7 +231,7 @@ Field order is API, since designated initializers must follow it.
 
 ### Widgets
 
-`vio/gui/ui/widgets.h` (G46) holds `button_t`, `checkbox_t` and `combobox_t`, written as ordinary
+`vui/ui/widgets.h` (G46) holds `button_t`, `checkbox_t` and `combobox_t`, written as ordinary
 components. They are controlled: the parent holds the value, mounts the widget with it as props, and
 applies the change the widget asks for through an event.
 
@@ -437,12 +437,12 @@ Past four points a pixel column a line is M4-decimated where it is placed. `heat
 of values quantized to 256 levels into a region of the glyph atlas and coloured through viridis in
 the shader, re-uploaded when its data's version changes. With rules, bars as boxes under `at_t`, and
 text for the labels, that makes the scrolling line, bar, scatter and spectrogram plots in
-`vio_gui_ui_counter`. A plot rebuilds its prims whenever its data changes. Departures from G28, and
+`vui_ui_counter`. A plot rebuilds its prims whenever its data changes. Departures from G28, and
 why, are in G44: no point buffer or pan uniform, no triangle-strip fills, no float texture.
 
 **Shaders** (G25, G33): `src/shaders/ui.slang` is the source. `src/shaders/ui_spirv.h` is the
 compiled SPIR-V, committed, so building vio needs no shader compiler; `cmake --build <dir> --target
-vio_gui_shaders` regenerates it. `-DVIO_GUI_FETCH_SLANG=ON` has cmake-dep fetch a prebuilt slangc
+vui_shaders` regenerates it. `-DVUI_FETCH_SLANG=ON` has cmake-dep fetch a prebuilt slangc
 2026.21 for the host and the target uses that; otherwise it looks for `slangc` on `PATH`. The
 header in the tree is slangc output (G33).
 
@@ -471,12 +471,12 @@ hardware interface and must not grow into one. APIs are loaded at run time as G6
 
 **Verified so far.** Windows, MSVC, AMD Radeon RX 5700 XT: `test/test_ui_render.cpp` (display list,
 chunks, hysteresis, expose, and an offscreen Vulkan render read back pixel by pixel), and
-`vio_gui_ui_counter` drawn through the swapchain at 144 DPI and checked by a screen capture. The
+`vui_ui_counter` drawn through the swapchain at 144 DPI and checked by a screen capture. The
 chunk-hysteresis and expose tests were each confirmed to fail with their fix reverted. Phase 10:
 `test/test_ui_text.cpp` -- Devanagari reordering and Arabic joining from HarfBuzz's own test fonts,
 a label and an icon at 1x and 2x, an atlas filling and emptying, and two offscreen renders, one of
 which draws a glyph that reaches the GPU only through a dirty rectangle (confirmed to fail with
-partial uploads switched off). `vio_gui_ui_counter` now shows labels, a star icon and a line of
+partial uploads switched off). `vui_ui_counter` now shows labels, a star icon and a line of
 Arabic, captured at 144 DPI; that capture is what found the barrier problem in G39, which no test
 reproduces. **Not run:** Linux (lavapipe, X11, Wayland) and macOS (MoltenVK) -- Docker was down;
 clang-cl `-fsyntax-only` over the phase 9 sources is the only check beyond MSVC. No validation
@@ -523,8 +523,8 @@ Open:
 | 10 | Text: FreeType and HarfBuzz through cmake-dep, glyph atlas, label component, icons. **In on Windows**; Linux and macOS not yet run | labels at 1x and 2x scale; a shaping test with a non-Latin script |
 | 11 | Plots: polylines with joins, mesh pipeline, markers, heatmaps, M4 decimation. **In on Windows** (G41, G44); no mesh pipeline | thick translucent zigzag lines; a million-point series panned at frame rate |
 | 12 | D3D12 and Metal backends. **On hold** | the phase 9 to 11 examples on each |
-| -- | Widgets: `button_t`, `checkbox_t`, `combobox_t`; keyboard focus; popups. **In on Windows** (G46) | `vio_gui_ui_widgets`; `test/test_ui_widgets.cpp` |
-| -- | Stress test: Qt's chip demo five times over, 200,000 movable, editable chips (`vio_gui_ui_chips`). **Holds at 60 fps on Windows** (G45) | `vio_gui_ui_chips --bench` |
+| -- | Widgets: `button_t`, `checkbox_t`, `combobox_t`; keyboard focus; popups. **In on Windows** (G46) | `vui_ui_widgets`; `test/test_ui_widgets.cpp` |
+| -- | Stress test: Qt's chip demo five times over, 200,000 movable, editable chips (`vui_ui_chips`). **Holds at 60 fps on Windows** (G45) | `vui_ui_chips --bench` |
 
 ## Stress test
 

@@ -20,7 +20,7 @@ Copyright (c) 2026 Jørgen Lind
   THE SOFTWARE.
 */
 
-#include "vio/gui/ui/ui.h"
+#include "vui/ui/ui.h"
 
 #include <cmath>
 #include <string>
@@ -30,9 +30,9 @@ Copyright (c) 2026 Jørgen Lind
 
 #include "ui_renderer.h"
 #include "ui_text.h"
-#include "vio/gui/context.h"
+#include "vui/context.h"
 
-namespace vio::gui::ui
+namespace vui::ui
 {
 namespace detail
 {
@@ -530,12 +530,12 @@ public:
       auto &keys = static_cast<detail::source_t<key_event_t> &>(*const_cast<pressable_t *>(_focused));
       keys.emit(event, *this);
     }
-    if (event.pressed && event.key == gui::key_t::tab)
+    if (event.pressed && event.key == vui::key_t::tab)
     {
       move_focus(has(event.modifiers, modifier_t::shift));
       return;
     }
-    if (!_focused || event.key != gui::key_t::space || event.repeat)
+    if (!_focused || event.key != vui::key_t::space || event.repeat)
       return;
     if (event.pressed)
     {
@@ -1485,8 +1485,8 @@ private:
   window_t &_window;
   vio::event_loop_t *_loop;
   run_config_t _config;
-  deferred_call_t _beat;
-  deferred_call_t _finish;
+  vio::deferred_call_t _beat;
+  vio::deferred_call_t _finish;
   waiter_list_t _ready;
   std::vector<std::coroutine_handle<>> _dead;
 
@@ -1836,7 +1836,7 @@ vio::event_loop_t &scope_t::loop() const noexcept
   return _runtime->loop();
 }
 
-gui::window_t &scope_t::window() const noexcept
+vui::window_t &scope_t::window() const noexcept
 {
   return _runtime->window();
 }
@@ -1862,4 +1862,4 @@ void scope_t::forget(std::coroutine_handle<> frame) noexcept
   if (_running.empty() && _joiner)
     _runtime->ready(*std::exchange(_joiner, nullptr));
 }
-} // namespace vio::gui::ui
+} // namespace vui::ui
