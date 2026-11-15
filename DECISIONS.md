@@ -650,3 +650,12 @@ display could not be freed until the watch's close had finished on a later turn,
 reported that through a completion. A `vio::fd_watch_t` keeps its storage until vio is done with
 it, and no callback arrives once the handle is dropped, so a backend's `close()` drops its watches
 and returns, and the display is freed one posted turn later.
+
+## G49. vui is its own repository
+
+The gui left vio in November 2026 as vui, with its history, through `git subtree split`. G48 is what
+made that possible. The namespace is `vui` rather than `vio::gui`, the headers are `<vui/...>`, and
+the targets are `vui` and `vui_ui`. vio is pinned by commit through cmake-dep like any other
+dependency, and `-DCMDEP_SOURCE_DIR_VIO` builds against a local checkout when the two change
+together. The CI image stays vio's: it already carries Xvfb, weston and every package the Linux
+backends need. Decisions keep their G numbers; earlier entries that say "the gui" mean vui.

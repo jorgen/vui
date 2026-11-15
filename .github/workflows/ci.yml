@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+env:
+  CMDEP_DIR: 3rdparty
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/jorgen/vio-ci:latest
+      options: --security-opt seccomp=unconfined
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-debug
+            flags: ""
+          - name: linux-asan
+            flags: -fsanitize=address -fno-omit-frame-pointer
+    name: ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache 3rdparty dependencies
+        uses: actions/cache@v4
+        with:
+          path: 3rdparty
+          key: 3rdparty-${{ runner.os }}-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'CMakeLists.txt') }}
+          restore-keys: 3rdparty-${{ runner.os }}-
+
+      - name: Configure
+        run: |
+          cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 \
+            -DCMAKE_C_FLAGS="${{ matrix.flags }}" -DCMAKE_CXX_FLAGS="${{ matrix.flags }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test on X11 and Wayland, epoll
+        shell: bash
+        env:
+          VIO_BACKEND: epoll
+        run: test/run_linux.sh build/vui_tests
+
+      - name: Test on X11 and Wayland, io_uring
+        shell: bash
+        env:
+          VIO_BACKEND: io_uring
+        run: test/run_linux.sh build/vui_tests
+
+  macos:
+    runs-on: macos-15
+    name: macos-debug
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install tools
+        run: brew install ninja
+
+      - name: Cache 3rdparty dependencies
+        uses: actions/cache@v4
+        with:
+          path: 3rdparty
+          key: 3rdparty-${{ runner.os }}-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'CMakeLists.txt') }}
+          restore-keys: 3rdparty-${{ runner.os }}-
+
+      - name: Configure and build
+        run: |
+          cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build
+
+      - name: Test
+        run: |
+          ./build/vui_tests
+          ./build/vui_hello 20
+          ./build/vui_input_echo 300
+          ./build/vui_windows_and_network 1300
+          ./build/vui_metal_clear 30
+
+  windows:
+    runs-on: windows-2025
+    name: windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache 3rdparty dependencies
+        uses: actions/cache@v4
+        with:
+          path: 3rdparty
+          key: 3rdparty-${{ runner.os }}-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'CMakeLists.txt') }}
+          restore-keys: 3rdparty-${{ runner.os }}-
+
+      - name: Install NASM
+        run: |
+          choco install nasm -y --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Configure, build and test
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          "%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath > "%RUNNER_TEMP%\vspath.txt"
+          set /p VSPATH=<"%RUNNER_TEMP%\vspath.txt"
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Debug || exit /b 1
+          cmake --build build || exit /b 1
+          ctest --test-dir build --output-on-failure
