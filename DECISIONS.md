@@ -878,3 +878,30 @@ accepts and a shell or a CMake file wants, with "Copy path with backslashes" for
 bar that becomes a field on a double click, takes a typed or pasted path (quotes dropped, `~` for
 home, either slash) and opens a file's folder with the file selected; and a context menu on the
 path bar.
+
+## G59. Archives through the tools the system has
+
+The explorer extracts and compresses with whatever archive tools are installed, found once, best
+first: 7-Zip, WinRAR and PeaZip on Windows (from the registry or Program Files) and the bsdtar that
+Windows ships; 7-Zip, bsdtar, GNU tar and Info-ZIP on Linux, with File Roller and Ark as windows to
+open in; the system's bsdtar on macOS, with Archive Utility, Keka and The Unarchiver. Their
+command lines do the work; nothing is linked. The menu offers what those tools add to Explorer and
+Finder: on an archive, Extract here and Extract to its own folder with the first tool that reads it,
+and Open in each tool that has a window; on anything, Compress to each format some tool writes --
+zip, 7z with 7-Zip, rar with WinRAR, tar.gz with tar -- each labelled with the tool.
+
+- Extracting never overwrites (7-Zip `-aos`, WinRAR `-o-`, bsdtar `-k`, GNU tar `--skip-old-files`,
+  unzip `-n`; GNU tar's `-k` keeps a file too but then exits with an error, which Linux caught), and a new folder
+  or archive takes a free name, "name (2)" and on. 7-Zip's and WinRAR's exit code 1 is a warning --
+  skipping a file that exists is one -- and counts as success.
+- Compressed tars go to tar, not to 7-Zip or WinRAR: one pass of those unpacks only the compression
+  and leaves a .tar where the folder should be, which the probe caught at once.
+- The work runs on a thread of its own, so a long extraction does not stop previews, and the folder
+  is read again afterwards with what was made selected.
+- `--probe` packs a small folder into every format some installed tool writes, unpacks it with a
+  tool that reads it, compares the contents, and extracts again over a changed file to see it kept.
+
+Their own context-menu extensions -- 7-Zip's or WinRAR's submenus in Explorer -- are not hosted:
+on Windows that means loading third-party shell extension DLLs into the process, which can take it
+down with them, and flattening their nested menus. The same actions through the tools' command
+lines give the user the same result without either.

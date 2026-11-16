@@ -387,6 +387,57 @@ const char *trash_name()
   return "Trash";
 }
 
+namespace detail
+{
+std::vector<archiver_t> find_archivers()
+{
+  std::vector<archiver_t> out;
+  const auto exists = [](const std::string &p) { return access(p.c_str(), F_OK) == 0; };
+  for (const char *p : {"/opt/homebrew/bin/7zz", "/usr/local/bin/7zz", "/opt/homebrew/bin/7z", "/usr/local/bin/7z"})
+  {
+    if (exists(p))
+    {
+      out.push_back({"7-Zip", archiver_t::kind_t::seven_zip, p, {}, {"zip", "7z"}});
+      break;
+    }
+  }
+  // macOS's own tar is bsdtar, which reads most archives and writes zip.
+  if (exists("/usr/bin/tar"))
+    out.push_back({"tar", archiver_t::kind_t::bsdtar, "/usr/bin/tar", {}, {"zip", "tar.gz"}});
+  for (const auto &[name, app] : {std::pair{"Archive Utility", "/System/Library/CoreServices/Applications/Archive Utility.app"}, {"Keka", "/Applications/Keka.app"}, {"The Unarchiver", "/Applications/The Unarchiver.app"}})
+  {
+    if (exists(app))
+      out.push_back({name, archiver_t::kind_t::gui_only, {}, app, {}});
+  }
+  return out;
+}
+
+std::expected<int, std::string> run_tool(const std::vector<std::string> &argv, const std::string &directory)
+{
+  std::vector<char *> args;
+  for (const auto &a : argv)
+    args.push_back(const_cast<char *>(a.c_str()));
+  args.push_back(nullptr);
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  if (!directory.empty())
+    posix_spawn_file_actions_addchdir_np(&actions, directory.c_str());
+  pid_t pid = 0;
+  const int e = posix_spawn(&pid, args[0], &actions, nullptr, args.data(), environ);
+  posix_spawn_file_actions_destroy(&actions);
+  if (e != 0)
+    return std::unexpected(argv.front() + ": " + std::strerror(e));
+  int status = 0;
+  waitpid(pid, &status, 0);
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+}
+} // namespace detail
+
+std::expected<void, std::string> open_in_archiver(const archiver_t &tool, const std::string &archive)
+{
+  return run({"/usr/bin/open", "-a", tool.gui, archive});
+}
+
 const char *file_manager_name()
 {
   return "Finder";

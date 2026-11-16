@@ -511,6 +511,119 @@ const char *trash_name()
   return "Recycle Bin";
 }
 
+namespace
+{
+bool exists(const std::string &path)
+{
+  return GetFileAttributesW(wide(path).c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+std::string registry_string(HKEY root, const wchar_t *key, const wchar_t *value)
+{
+  wchar_t buffer[MAX_PATH * 2] = {};
+  DWORD size = sizeof buffer;
+  if (RegGetValueW(root, key, value, RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, buffer, &size) != ERROR_SUCCESS)
+    return {};
+  return narrow(buffer);
+}
+
+std::string program_files()
+{
+  wchar_t buffer[MAX_PATH] = {};
+  const DWORD n = GetEnvironmentVariableW(L"ProgramW6432", buffer, MAX_PATH);
+  if (n > 0 && n < MAX_PATH)
+    return narrow(buffer);
+  return "C:\\Program Files";
+}
+
+// One argument as CommandLineToArgvW reads it back: quoted, with the backslashes before a quote
+// doubled.
+void append_argument(std::wstring &line, const std::wstring &arg)
+{
+  if (!line.empty())
+    line += L' ';
+  line += L'"';
+  std::size_t slashes = 0;
+  for (const wchar_t c : arg)
+  {
+    if (c == L'\\')
+    {
+      ++slashes;
+      continue;
+    }
+    if (c == L'"')
+      line.append(slashes * 2 + 1, L'\\');
+    else
+      line.append(slashes, L'\\');
+    slashes = 0;
+    line += c;
+  }
+  line.append(slashes * 2, L'\\');
+  line += L'"';
+}
+} // namespace
+
+namespace detail
+{
+std::vector<archiver_t> find_archivers()
+{
+  std::vector<archiver_t> out;
+  const auto files = program_files();
+  // 7-Zip says where it is in the registry; the default folder otherwise.
+  auto seven = registry_string(HKEY_LOCAL_MACHINE, L"SOFTWARE\\7-Zip", L"Path64");
+  if (seven.empty())
+    seven = registry_string(HKEY_LOCAL_MACHINE, L"SOFTWARE\\7-Zip", L"Path");
+  if (seven.empty())
+    seven = files + "\\7-Zip\\";
+  if (!seven.empty() && seven.back() != '\\')
+    seven += '\\';
+  if (exists(seven + "7z.exe"))
+    out.push_back({"7-Zip", archiver_t::kind_t::seven_zip, seven + "7z.exe", exists(seven + "7zFM.exe") ? seven + "7zFM.exe" : std::string(), {"zip", "7z"}});
+  auto rar = registry_string(HKEY_LOCAL_MACHINE, L"SOFTWARE\\WinRAR", L"exe64");
+  if (rar.empty())
+    rar = files + "\\WinRAR\\WinRAR.exe";
+  if (exists(rar))
+    out.push_back({"WinRAR", archiver_t::kind_t::winrar, rar, rar, {"rar", "zip"}});
+  if (exists(files + "\\PeaZip\\peazip.exe"))
+    out.push_back({"PeaZip", archiver_t::kind_t::gui_only, {}, files + "\\PeaZip\\peazip.exe", {}});
+  // Windows itself has bsdtar, which reads most archives and writes zip.
+  wchar_t system[MAX_PATH] = {};
+  GetSystemDirectoryW(system, MAX_PATH);
+  const auto tar = narrow(system) + "\\tar.exe";
+  if (exists(tar))
+    out.push_back({"Windows tar", archiver_t::kind_t::bsdtar, tar, {}, {"zip", "tar.gz"}});
+  return out;
+}
+
+std::expected<int, std::string> run_tool(const std::vector<std::string> &argv, const std::string &directory)
+{
+  std::wstring line;
+  for (const auto &a : argv)
+    append_argument(line, wide(a));
+  STARTUPINFOW startup{};
+  startup.cb = sizeof startup;
+  PROCESS_INFORMATION process{};
+  const auto dir = wide(directory);
+  if (!CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, dir.empty() ? nullptr : dir.c_str(), &startup, &process))
+    return std::unexpected("cannot start " + argv.front() + ": " + error_text(GetLastError()));
+  WaitForSingleObject(process.hProcess, INFINITE);
+  DWORD code = 1;
+  GetExitCodeProcess(process.hProcess, &code);
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  return int(code);
+}
+} // namespace detail
+
+std::expected<void, std::string> open_in_archiver(const archiver_t &tool, const std::string &archive)
+{
+  std::wstring args;
+  append_argument(args, wide(archive));
+  if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", wide(tool.gui).c_str(), args.c_str(), nullptr, SW_SHOWNORMAL)) <= 32)
+    return std::unexpected(error_text(GetLastError()));
+  return {};
+}
+
 const char *file_manager_name()
 {
   return "Explorer";

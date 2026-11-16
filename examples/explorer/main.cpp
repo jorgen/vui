@@ -323,6 +323,34 @@ bool same_path(const std::string &a, const std::string &b)
 #endif
 }
 
+// A name without its archive suffix, compressed tars as one: "logs.tar.gz" -> "logs". A folder's or
+// a plain file's name is kept whole but for its extension.
+std::string archive_stem(const std::string &name)
+{
+  const auto lowered = fold(name);
+  for (const char *s : {".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst"})
+  {
+    const std::string suffix = s;
+    if (lowered.size() > suffix.size() && lowered.compare(lowered.size() - suffix.size(), suffix.size(), suffix) == 0)
+      return name.substr(0, name.size() - suffix.size());
+  }
+  const auto dot = name.rfind('.');
+  return dot == std::string::npos || dot == 0 ? name : name.substr(0, dot);
+}
+
+// `base` + `suffix` in `folder`, or "base (2)" and on, whichever is not taken yet.
+std::string free_name(const std::string &folder, const std::string &base, const std::string &suffix)
+{
+  std::error_code error;
+  for (int n = 1; n < 1000; ++n)
+  {
+    const auto name = n == 1 ? base + suffix : base + " (" + std::to_string(n) + ")" + suffix;
+    if (!std::filesystem::exists(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(shell::join(folder, name).data()), shell::join(folder, name).size())), error))
+      return name;
+  }
+  return base + suffix;
+}
+
 // ---- icons, as paths in the unit square
 
 std::shared_ptr<const ui::path_t> make_path(const std::function<void(ui::path_t &)> &draw)
@@ -1090,6 +1118,10 @@ enum class action_t
   copy_path,
   copy_path_native,
   edit_path,
+  extract_here,
+  extract_to,
+  open_in_archiver,
+  compress,
   add_place,
   remove_place,
   place_up,
@@ -1189,6 +1221,15 @@ struct explorer_t
   pipe_t *pipe = nullptr;
   worker_t *lister = nullptr;
   worker_t *helper = nullptr;
+  // Archive work, which can take minutes, on a thread of its own so previews and thumbnails go on.
+  worker_t *jobs = nullptr;
+  // What the archive items of the open menu do: which tool, and the archive suffix to write.
+  struct archive_offer_t
+  {
+    std::size_t tool = 0;
+    std::string suffix;
+  };
+  std::vector<archive_offer_t> archive_offers;
 
   // ---- navigation
 
@@ -1288,6 +1329,66 @@ struct explorer_t
               first_rows = clock_t_::now() - asked_at;
             remember(path, table.entries());
             say("");
+            scope.invalidate();
+          });
+      });
+  }
+
+  // Extract, open or compress with an archive tool, on the jobs thread; the folder is read again when
+  // it is done, with what was made selected.
+  void archive_job(ui::scope_t &, action_t action, const archive_offer_t &offer, const shell::entry_t &entry)
+  {
+    const auto &tool = shell::archivers()[offer.tool];
+    const auto item = shell::join(path, entry.name);
+    const auto folder = path;
+    if (action == action_t::open_in_archiver)
+    {
+      launch([tool, item] { return shell::open_in_archiver(tool, item); }, "Opened " + entry.name + " in " + tool.name);
+      return;
+    }
+    std::string made;
+    std::string doing;
+    std::function<std::expected<void, std::string>()> work;
+    if (action == action_t::compress)
+    {
+      made = free_name(folder, archive_stem(entry.name), "." + offer.suffix);
+      const auto archive = shell::join(folder, made);
+      doing = "Compressing " + entry.name + " to " + made + " with " + tool.name;
+      work = [tool, item, archive] { return shell::compress(tool, item, archive); };
+    }
+    else if (action == action_t::extract_to)
+    {
+      made = free_name(folder, archive_stem(entry.name), "");
+      const auto into = shell::join(folder, made);
+      doing = "Extracting " + entry.name + " to " + made + " with " + tool.name;
+      work = [tool, item, into] { return shell::extract(tool, item, into); };
+    }
+    else
+    {
+      made = entry.name;
+      doing = "Extracting " + entry.name + " here with " + tool.name;
+      work = [tool, item, folder] { return shell::extract(tool, item, folder); };
+    }
+    say(doing + "...");
+    auto *p = pipe;
+    const auto started = clock_t_::now();
+    jobs->post(
+      [this, p, work, made, folder, doing, started]
+      {
+        auto r = work();
+        const auto took = clock_t_::now() - started;
+        p->post_event(
+          [this, r, made, folder, doing, took](ui::scope_t &scope)
+          {
+            if (!r)
+            {
+              say(r.error(), true);
+              scope.invalidate();
+              return;
+            }
+            say(doing.substr(0, doing.find(" with ")) + ": done in " + ms(std::chrono::duration_cast<std::chrono::nanoseconds>(took)));
+            if (path == folder)
+              go(scope, folder, false, made);
             scope.invalidate();
           });
       });
@@ -1677,8 +1778,54 @@ struct explorer_t
           add({.label = "No application is registered for " + ext, .enabled = false}, action_t::refresh);
         else
         {
-          for (std::size_t i = 0; i < found->second.size() && items.size() < ui::context_menu_t::max_items - 8; ++i)
+          for (std::size_t i = 0; i < found->second.size() && items.size() < ui::context_menu_t::max_items - 16; ++i)
             add({.label = found->second[i].name, .detail = found->second[i].is_default ? "default" : ""}, action_t::open_with, i);
+        }
+      }
+      // What the installed archive tools offer (G59): extracting an archive, opening it in a tool's
+      // own window, and compressing anything into each format some tool writes.
+      archive_offers.clear();
+      const auto &tools = shell::archivers();
+      bool archive_header = false;
+      const auto archive_items = [&] {
+        if (!archive_header)
+        {
+          rule();
+          header("Archive");
+          archive_header = true;
+        }
+      };
+      if (!folder && shell::is_archive(menu_entry->name))
+      {
+        for (std::size_t t = 0; t < tools.size(); ++t)
+        {
+          if (!shell::can_extract(tools[t], menu_entry->name))
+            continue;
+          archive_items();
+          archive_offers.push_back({t, {}});
+          add({.label = "Extract here", .detail = tools[t].name}, action_t::extract_here, archive_offers.size() - 1);
+          add({.label = "Extract to \"" + archive_stem(menu_entry->name) + "\"", .detail = tools[t].name}, action_t::extract_to, archive_offers.size() - 1);
+          break;
+        }
+        for (std::size_t t = 0; t < tools.size(); ++t)
+        {
+          if (tools[t].gui.empty())
+            continue;
+          archive_items();
+          archive_offers.push_back({t, {}});
+          add({.label = "Open in " + tools[t].name}, action_t::open_in_archiver, archive_offers.size() - 1);
+        }
+      }
+      for (const char *suffix : {"zip", "7z", "rar", "tar.gz"})
+      {
+        for (std::size_t t = 0; t < tools.size(); ++t)
+        {
+          if (std::find(tools[t].creates.begin(), tools[t].creates.end(), suffix) == tools[t].creates.end())
+            continue;
+          archive_items();
+          archive_offers.push_back({t, suffix});
+          add({.label = "Compress to \"" + archive_stem(menu_entry->name) + "." + suffix + "\"", .detail = tools[t].name}, action_t::compress, archive_offers.size() - 1);
+          break;
         }
       }
       rule();
@@ -1771,6 +1918,13 @@ struct explorer_t
       break;
     case action_t::add_place:
       add_place(target);
+      break;
+    case action_t::extract_here:
+    case action_t::extract_to:
+    case action_t::open_in_archiver:
+    case action_t::compress:
+      if (entry && extra < archive_offers.size())
+        archive_job(scope, action, archive_offers[extra], *entry);
       break;
     case action_t::reveal:
       launch([target] { return shell::reveal(target); }, std::string("Shown in ") + shell::file_manager_name());
@@ -2014,9 +2168,11 @@ struct explorer_t
     // Declared after the pipe, so their threads are joined before it goes.
     worker_t lister_thread(false);
     worker_t helper_thread(true);
+    worker_t jobs_thread(true);
     pipe = &events_from_workers;
     lister = &lister_thread;
     helper = &helper_thread;
+    jobs = &jobs_thread;
     table.types = &types;
     table.want_type = [this](const std::string &ext) { want_type(ext); };
 
@@ -2231,6 +2387,7 @@ struct explorer_t
     pipe = nullptr;
     lister = nullptr;
     helper = nullptr;
+    jobs = nullptr;
   }
 };
 
@@ -2341,6 +2498,46 @@ int probe_and_check()
     check(picture && picture->width > 0 && picture->height > 0 && picture->width >= picture->height && picture->rgba.size() == std::size_t(picture->width) * picture->height * 4,
           "a thumbnail of a picture" + (picture ? " (" + std::to_string(picture->width) + " x " + std::to_string(picture->height) + ")" : ": " + picture.error()));
 #endif
+  }
+  // Archives: every format some installed tool writes, packed and unpacked again, the contents
+  // compared; and extracting again keeps a file that is there.
+  {
+    const auto &tools = shell::archivers();
+    std::printf("archive tools:");
+    for (const auto &t : tools)
+      std::printf(" %s", t.name.c_str());
+    std::printf("\n");
+    const auto source = shell::join(scratch, "packed");
+    std::filesystem::create_directories(native(shell::join(source, "inner")), ec);
+    std::ofstream(native(shell::join(source, "a.txt")), std::ios::binary) << "alpha\n";
+    std::ofstream(native(shell::join(shell::join(source, "inner"), "b.txt")), std::ios::binary) << "beta\n";
+    const auto read = [&](const std::string &p)
+    {
+      std::ifstream in(native(p), std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    for (const char *suffix : {"zip", "7z", "rar", "tar.gz"})
+    {
+      const auto writer = std::find_if(tools.begin(), tools.end(), [&](const shell::archiver_t &t) { return std::find(t.creates.begin(), t.creates.end(), suffix) != t.creates.end(); });
+      if (writer == tools.end())
+        continue;
+      const auto archive = shell::join(scratch, std::string("packed.") + suffix);
+      const auto packed = shell::compress(*writer, source, archive);
+      const auto reader = std::find_if(tools.begin(), tools.end(), [&](const shell::archiver_t &t) { return shell::can_extract(t, archive); });
+      const auto into = shell::join(scratch, std::string("unpacked-") + suffix);
+      const auto unpacked = packed && reader != tools.end() ? shell::extract(*reader, archive, into) : std::expected<void, std::string>(std::unexpected(std::string("nothing reads it")));
+      const auto back = shell::join(into, "packed");
+      const bool same = unpacked && read(shell::join(back, "a.txt")) == "alpha\n" && read(shell::join(shell::join(back, "inner"), "b.txt")) == "beta\n";
+      check(packed && same, std::string(suffix) + " written by " + writer->name + (reader != tools.end() ? " and read back by " + reader->name : "") +
+                              (packed ? (unpacked ? std::string() : ": " + unpacked.error()) : ": " + packed.error()));
+      if (same)
+      {
+        // Again, over a file changed since: it must stay as it is.
+        std::ofstream(native(shell::join(back, "a.txt")), std::ios::binary) << "changed\n";
+        const auto again = shell::extract(*reader, archive, into);
+        check(again && read(shell::join(back, "a.txt")) == "changed\n", std::string(suffix) + ": extracting again keeps a file that is there");
+      }
+    }
   }
   // The places, saved and read back, in a settings folder of the probe's own.
   {

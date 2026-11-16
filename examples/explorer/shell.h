@@ -108,6 +108,39 @@ struct picture_t
 };
 [[nodiscard]] std::expected<picture_t, std::string> thumbnail(const std::string &path, int pixels);
 
+// An archive tool the system has (G59): found once, best first. `program` is its command line, used
+// to extract and compress; `gui` is its own window, to open an archive in, when it has one.
+struct archiver_t
+{
+  enum class kind_t : std::uint8_t
+  {
+    seven_zip,
+    winrar,
+    bsdtar,
+    gnu_tar,
+    info_zip,
+    gui_only,
+  };
+  std::string name;
+  kind_t kind = kind_t::gui_only;
+  std::string program;
+  std::string gui;
+  // What it writes, by suffix: "zip", "7z", "rar", "tar.gz".
+  std::vector<std::string> creates;
+};
+[[nodiscard]] const std::vector<archiver_t> &archivers();
+// An archive by its name: zip, 7z, rar, tar and the compressed tars, and the rest the tools read.
+[[nodiscard]] bool is_archive(const std::string &name);
+// Whether this tool's command line reads that archive.
+[[nodiscard]] bool can_extract(const archiver_t &tool, const std::string &name);
+// Unpacks `archive` into the folder `into`, which is made if needed. Never overwrites a file that is
+// there already. Waits until it is done: call it on a worker.
+std::expected<void, std::string> extract(const archiver_t &tool, const std::string &archive, const std::string &into);
+// Packs one file or folder into `archive`, which must not exist yet, its format chosen by its
+// suffix. Names inside are relative to the item's folder. Waits until it is done.
+std::expected<void, std::string> compress(const archiver_t &tool, const std::string &item, const std::string &archive);
+std::expected<void, std::string> open_in_archiver(const archiver_t &tool, const std::string &archive);
+
 // Moves a file or a folder, with everything in it, to the Recycle Bin or Trash, from where it can be
 // restored. May take a while for a big folder.
 std::expected<void, std::string> trash(const std::string &path);
@@ -122,4 +155,12 @@ std::expected<void, std::string> remove_permanently(const std::string &path);
 
 // Call once, on the thread that launches things, before any of the above (COM on Windows).
 void initialize();
+
+namespace detail
+{
+// Each platform's part of the archive support: the tools it finds, and running one and waiting for
+// it, in `directory`, to its exit code.
+std::vector<archiver_t> find_archivers();
+std::expected<int, std::string> run_tool(const std::vector<std::string> &argv, const std::string &directory);
+} // namespace detail
 } // namespace shell

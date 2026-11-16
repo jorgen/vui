@@ -194,7 +194,7 @@ cmake --build --preset dist-windows
 | `vui_ui_chips` | 200,000 chips, the stress test |
 | `vui_ui_widgets` | the widget set |
 | `vui_ui_text` | labels, line edits, a notes pane and a log fed by a timer |
-| `vui_explorer` | a file explorer: folders that open at once and fill in as they are read, natural sorting, filtering and type-ahead, a context menu with the applications that open the file, delete to the Recycle Bin or for good, a path bar to type or paste into, thumbnails and text previews from the system, on Windows, Linux and macOS |
+| `vui_explorer` | a file explorer: folders that open at once and fill in as they are read, natural sorting, filtering and type-ahead, a context menu with the applications that open the file, delete to the Recycle Bin or for good, a path bar to type or paste into, thumbnails and text previews from the system, configurable places, extract and compress with the archive tools installed, on Windows, Linux and macOS |
 | `vui_task_manager` | the advanced one: live CPU, per-core and memory charts, a sortable, filterable process table and an activity log, fed by a sampling thread on Windows, Linux and macOS |
 | `vui_vulkan_clear`, `vui_d3d12_clear`, `vui_metal_clear` | bring your own renderer |
 

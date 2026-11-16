@@ -884,6 +884,69 @@ const char *trash_name()
   return "Trash";
 }
 
+namespace detail
+{
+std::string which(const std::string &program)
+{
+  for (const auto &dir : split(env("PATH", "/usr/bin:/bin"), ':'))
+  {
+    const auto full = dir + "/" + program;
+    if (access(full.c_str(), X_OK) == 0)
+      return full;
+  }
+  return {};
+}
+
+std::vector<archiver_t> find_archivers()
+{
+  std::vector<archiver_t> out;
+  for (const char *seven : {"7zz", "7z", "7za"})
+  {
+    if (const auto p = which(seven); !p.empty())
+    {
+      out.push_back({"7-Zip", archiver_t::kind_t::seven_zip, p, {}, {"zip", "7z"}});
+      break;
+    }
+  }
+  if (const auto p = which("bsdtar"); !p.empty())
+    out.push_back({"bsdtar", archiver_t::kind_t::bsdtar, p, {}, {"zip", "tar.gz"}});
+  if (const auto p = which("tar"); !p.empty())
+    out.push_back({"tar", archiver_t::kind_t::gnu_tar, p, {}, {"tar.gz"}});
+  if (const auto p = which("unzip"); !p.empty())
+    out.push_back({"Info-ZIP", archiver_t::kind_t::info_zip, p, {}, which("zip").empty() ? std::vector<std::string>{} : std::vector<std::string>{"zip"}});
+  if (const auto p = which("file-roller"); !p.empty())
+    out.push_back({"File Roller", archiver_t::kind_t::gui_only, {}, p, {}});
+  if (const auto p = which("ark"); !p.empty())
+    out.push_back({"Ark", archiver_t::kind_t::gui_only, {}, p, {}});
+  return out;
+}
+
+std::expected<int, std::string> run_tool(const std::vector<std::string> &argv, const std::string &directory)
+{
+  std::vector<char *> args;
+  for (const auto &a : argv)
+    args.push_back(const_cast<char *>(a.c_str()));
+  args.push_back(nullptr);
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  if (!directory.empty())
+    posix_spawn_file_actions_addchdir_np(&actions, directory.c_str());
+  pid_t pid = 0;
+  const int e = posix_spawnp(&pid, args[0], &actions, nullptr, args.data(), environ);
+  posix_spawn_file_actions_destroy(&actions);
+  if (e != 0)
+    return std::unexpected("cannot start " + argv.front() + ": " + std::strerror(e));
+  int status = 0;
+  waitpid(pid, &status, 0);
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+}
+} // namespace detail
+
+std::expected<void, std::string> open_in_archiver(const archiver_t &tool, const std::string &archive)
+{
+  return spawn({tool.gui, archive});
+}
+
 const char *file_manager_name()
 {
   return "file manager";
