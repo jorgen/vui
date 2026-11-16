@@ -152,7 +152,10 @@ enum class align_t : std::uint8_t
 // Event sources
 
 // A left button pressed and released on the same box. `source` is the pressable it was pressed on,
-// so one subscription over several sources can tell them apart: `press->source == &inc`.
+// so one subscription over several sources can tell them apart: `press->source == &inc`. A press goes
+// to the topmost pressable under the pointer that takes it -- one that is focusable, or that something
+// subscribes to presses or drags on -- so a pressable that only tracks the pointer does not stop a
+// press reaching the one under it (G52).
 struct press_event_t
 {
   const pressable_t *source = nullptr;

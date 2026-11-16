@@ -407,6 +407,7 @@ public:
     const auto owners = tracked_owners();
     build(*_root);
     _items.clear();
+    _popup_items.clear();
     _stats.views = clock::now() - started;
 
     std::vector<slot_t *> leaving;
@@ -458,6 +459,7 @@ public:
       slot->subtree_dirty = false;
 
     _items.clear();
+    _popup_items.clear();
     collect_items(*_root, 0, 0, 1);
     for (auto &popup : _popups)
     {
@@ -467,7 +469,9 @@ public:
         popup.backdrop.events = *popup.slot->dismiss;
         _items.push_back(draw_item_t{rect_t{0, 0, _logical.width, _logical.height}, {}, &popup.backdrop, popup.slot, -1});
       }
+      const auto first = _items.size();
       collect_items(*popup.slot, popup.x, popup.y, popup.s);
+      _popup_items.emplace_back(first, _items.size());
     }
     update_bounds();
     _stats.display_list = clock::now() - emitting;
@@ -688,6 +692,7 @@ public:
     _slots.clear();
     _root = nullptr;
     _items.clear();
+    _popup_items.clear();
     _popups.clear();
     _prims.clear();
     _runs.clear();
@@ -1559,9 +1564,48 @@ private:
     return nullptr;
   }
 
+  // Whether a press on this box is its own. A pressable nothing listens to for presses or drags,
+  // and that cannot take focus, lets the press through to what is under it, as the wheel does
+  // (G52): a chart that tracks the pointer inside a card that is pressed.
+  [[nodiscard]] static bool takes_press(const draw_item_t &item) noexcept
+  {
+    if (item.box->on_press)
+      return true;
+    const auto *source = item.box->events.source;
+    if (!source)
+      return false;
+    return source->focusable() || static_cast<const detail::source_t<press_event_t> &>(*source).subscribed() || static_cast<const detail::source_t<drag_event_t> &>(*source).subscribed();
+  }
+
+  // A press that lands in a popup stays in it: it may fall through to another of the popup's boxes,
+  // never to the backdrop that dismisses it or to anything under it.
+  [[nodiscard]] const draw_item_t *press_hit(point_t position) const noexcept
+  {
+    std::size_t floor = 0;
+    bool landed = false;
+    for (std::size_t i = _items.size(); i-- > floor;)
+    {
+      const auto &item = _items[i];
+      if (!item.rect.contains(position) || (!item.box->events.source && !item.box->on_press))
+        continue;
+      if (takes_press(item))
+        return &item;
+      if (!landed)
+      {
+        landed = true;
+        for (const auto &[first, last] : _popup_items)
+        {
+          if (i >= first && i < last)
+            floor = first;
+        }
+      }
+    }
+    return nullptr;
+  }
+
   [[nodiscard]] target_t target_at(point_t position) const noexcept
   {
-    const auto *item = hit(position);
+    const auto *item = press_hit(position);
     if (!item)
       return {};
     if (item->box->events.source)
@@ -1731,6 +1775,8 @@ private:
     box_t backdrop;
   };
   std::vector<popup_t> _popups;
+  // Where each popup's own boxes are in _items, its backdrop not included.
+  std::vector<std::pair<std::size_t, std::size_t>> _popup_items;
 };
 
 // ---- the GL stopgap (G23): every primitive is a scissored clear. Corners stay square; borders,

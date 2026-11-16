@@ -464,3 +464,58 @@ TEST_CASE("ui hover: a subscriber is told where the pointer is over its pressabl
           CHECK_FALSE(root.seen[2].inside);
         });
 }
+
+TEST_CASE("ui press: a pressable nothing listens to for presses lets the press through to the one under it")
+{
+  struct root_t
+  {
+    ui::pressable_t card;
+    ui::pressable_t chart;
+    ui::pressable_t button;
+    int card_presses = 0;
+    int button_presses = 0;
+    int hovers = 0;
+
+    ui::node_t view() const
+    {
+      // The chart only tracks the pointer; the button is listened to.
+      return ui::column_t{.padding = 10,
+                          .children = {ui::box_t{.size = {200, 80},
+                                                 .color = {0.2f, 0.2f, 0.2f, 1},
+                                                 .events = card,
+                                                 .children = {ui::row_t{.gap = 10,
+                                                                        .children = {ui::box_t{.size = {80, 40}, .color = {0, 0, 1, 1}, .events = chart},
+                                                                                     ui::box_t{.size = {80, 40}, .color = {0, 1, 0, 1}, .events = button}}}}}}};
+    }
+    ui::behaviour_t behave(ui::scope_t &scope)
+    {
+      auto presses = ui::subscribe<ui::press_event_t>(card, button);
+      auto moves = ui::subscribe<ui::hover_event_t>(chart);
+      auto events = ui::merge(scope, presses, moves);
+      while (auto event = co_await events)
+      {
+        if (event->index() == 1)
+          ++hovers;
+        else
+          ++(std::get<0>(*event).source == &card ? card_presses : button_presses);
+      }
+    }
+  } root;
+  frame_t frame;
+  drive(root, frame,
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          const auto chart = rect_of(frame, &root.chart);
+          const auto button = rect_of(frame, &root.button);
+          REQUIRE(chart.width > 0);
+          click(window, {chart.x + chart.width / 2.0, chart.y + chart.height / 2.0});
+          co_await settle(loop);
+          CHECK(root.card_presses == 1);
+          CHECK(root.hovers > 0);
+          // A listened-to pressable on top still takes its own presses.
+          click(window, {button.x + button.width / 2.0, button.y + button.height / 2.0});
+          co_await settle(loop);
+          CHECK(root.button_presses == 1);
+          CHECK(root.card_presses == 1);
+        });
+}

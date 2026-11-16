@@ -737,3 +737,15 @@ Measured: layout was 12 ms per frame in a Debug build with 364 texts. Counting p
 layout blow-up -- skipping the space handed out while measuring changed nothing -- and the time is
 HarfBuzz shaping every text again whenever its component rebuilds. In Release it is 0.6 to 1.7 ms. A
 cache of shaped runs is the lever if it ever matters.
+
+## G52. A press nobody listens to falls through
+
+In the task manager a press on a card's chart did not select the card. The chart has a pressable of
+its own, for its bounds and its crosshair, and a press went to the topmost pressable under the
+pointer whether or not anything wanted it. Now it goes to the topmost one that takes it: focusable,
+or with something subscribed to its presses or drags -- the rule the wheel already followed (G50).
+A pressable that only tracks the pointer, or only measures itself, is transparent to presses.
+
+One limit, which the popup test caught at once: a press that lands in a popup stays in it. Falling
+through may reach another box of the same popup but never its dismissing backdrop, or a press on a
+menu's own unclaimed area would close the menu.
