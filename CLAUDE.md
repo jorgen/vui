@@ -22,6 +22,10 @@ a commit that is on GitHub, or CI cannot fetch it.
 
 On Windows, run `vcvars64.bat` before configuring.
 
+`cmake --preset dist-windows` then `cmake --build --preset dist-windows` builds the redistributable
+demos (static runtime, GUI subsystem) and zips them in `build-dist/`; `docs/demos.txt` is the zip's
+readme.
+
 ## Tests
 
 - Windows and macOS: `./build/vui_tests`. On Windows, `ctest` also runs the examples with frame

@@ -170,6 +170,17 @@ cmake -B build -DCMDEP_SOURCE_DIR_VIO=/path/to/vio
 | `VUI_FETCH_SLANG` | `OFF` | fetch a prebuilt `slangc` for the `vui_shaders` target |
 | `VUI_USE_SYSTEM_<DEP>` | `OFF` | use an installed copy of a dependency instead of fetching it |
 
+### Standalone demos
+
+The `dist-windows` preset builds the task manager and the explorer as executables that need nothing
+but Windows -- the C++ runtime linked in, no console window -- and zips them with the licence:
+
+```bash
+cmake --preset dist-windows
+cmake --build --preset dist-windows
+# build-dist/vui-demos-<version>-Windows-AMD64.zip
+```
+
 ## Examples
 
 | | |

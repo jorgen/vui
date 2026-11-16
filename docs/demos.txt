@@ -1,0 +1,19 @@
+vui demos
+=========
+
+Two applications built on vui (https://github.com/jorgen/vui), a UI toolkit on the vio event loop.
+Each is one executable that needs nothing installed: copy it anywhere and run it.
+
+vui_task_manager
+  Live CPU, per-core and memory charts, and a process table you can sort and filter. Hover the
+  big charts for a readout; click a card on the left to switch views.
+
+vui_explorer
+  A file explorer. Folders open at once and fill in as they are read. Right-click a file for the
+  applications that open it. Keys: arrows, Enter, Backspace (up), Alt+Left/Right (back/forward),
+  F5, Shift+F10 (menu); start typing to jump to a name.
+
+Graphics come from your graphics driver (Vulkan, or OpenGL). The executables are not signed, so
+Windows may ask before running one the first time.
+
+MIT licensed; see LICENSE.

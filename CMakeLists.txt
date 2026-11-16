@@ -178,6 +178,19 @@ if(VUI_BUILD_EXAMPLES)
     elseif(APPLE)
         target_link_libraries(vui_explorer PRIVATE "-framework CoreServices")
     endif()
+    # The demos with the licence and a readme, zipped: what the dist-windows preset builds.
+    set(VUI_DEMOS_DIR "${CMAKE_BINARY_DIR}/vui-demos")
+    set(VUI_DEMOS_ZIP "${CMAKE_BINARY_DIR}/vui-demos-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}.zip")
+    add_custom_target(vui_demos_package
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${VUI_DEMOS_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${VUI_DEMOS_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:vui_task_manager> $<TARGET_FILE:vui_explorer> "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" "${VUI_DEMOS_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/docs/demos.txt" "${VUI_DEMOS_DIR}/README.txt"
+        COMMAND ${CMAKE_COMMAND} -E tar cf "${VUI_DEMOS_ZIP}" --format=zip vui-demos
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        DEPENDS vui_task_manager vui_explorer
+        COMMENT "Packaging the demos into ${VUI_DEMOS_ZIP}"
+        VERBATIM)
     if(VUI_BUILD_TESTS)
         add_test(NAME vui_task_manager_probe COMMAND vui_task_manager --probe)
         add_test(NAME vui_explorer_probe COMMAND vui_explorer --probe)

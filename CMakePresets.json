@@ -1,0 +1,34 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "dist-windows",
+      "displayName": "Standalone Windows demos",
+      "description": "The demos as executables that need nothing but Windows: the C++ runtime linked in, no console window. Run from a Visual Studio developer prompt.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-dist",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VUI_BUILD_TESTS": "OFF",
+        "CMAKE_POLICY_DEFAULT_CMP0091": "NEW",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
+        "CMAKE_WIN32_EXECUTABLE": "ON",
+        "CMAKE_EXE_LINKER_FLAGS": "/ENTRY:mainCRTStartup"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dist-windows",
+      "configurePreset": "dist-windows",
+      "targets": [
+        "vui_demos_package"
+      ]
+    }
+  ]
+}
