@@ -55,6 +55,9 @@ struct place_t
   std::uint64_t free = 0;
 };
 [[nodiscard]] std::string home();
+// Where a user's settings for the explorer belong: under the roaming AppData folder on Windows,
+// ~/Library/Application Support on macOS, $XDG_CONFIG_HOME on Linux. Not created here.
+[[nodiscard]] std::string config_dir();
 [[nodiscard]] std::vector<place_t> places();
 [[nodiscard]] std::vector<place_t> drives();
 

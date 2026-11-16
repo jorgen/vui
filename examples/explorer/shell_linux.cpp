@@ -519,6 +519,11 @@ std::string home()
   return h.empty() ? std::string("/") : h;
 }
 
+std::string config_dir()
+{
+  return env("XDG_CONFIG_HOME", home() + "/.config") + "/vui/explorer";
+}
+
 std::vector<place_t> places()
 {
   const auto h = home();

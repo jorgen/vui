@@ -242,6 +242,87 @@ std::string typed_path(std::string text)
   return text;
 }
 
+// ---- the places in the sidebar, which the user arranges and which are kept between runs
+
+std::filesystem::path as_path(const std::string &s)
+{
+  return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(s.data()), s.size()));
+}
+
+// Where the places are kept; the probe points it elsewhere so it never touches the user's own list.
+std::string config_override;
+
+std::string config_dir()
+{
+  return config_override.empty() ? shell::config_dir() : config_override;
+}
+
+std::string places_file()
+{
+  const auto dir = config_dir();
+  return dir.empty() ? std::string() : shell::join(dir, "places");
+}
+
+// One place a line: its kind, a tab, its name, a tab, its path. The system's list until the user has
+// changed it.
+std::vector<shell::place_t> load_places()
+{
+  const auto file = places_file();
+  std::ifstream in(file.empty() ? std::filesystem::path() : as_path(file));
+  if (!in)
+    return shell::places();
+  std::vector<shell::place_t> out;
+  for (std::string line; std::getline(in, line);)
+  {
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    if (line.empty() || line[0] == '#')
+      continue;
+    const auto a = line.find('\t');
+    const auto b = a == std::string::npos ? a : line.find('\t', a + 1);
+    if (b == std::string::npos)
+      continue;
+    shell::place_t p;
+    p.kind = line.compare(0, a, "home") == 0 ? shell::place_t::kind_t::home : shell::place_t::kind_t::folder;
+    p.name = line.substr(a + 1, b - a - 1);
+    p.path = line.substr(b + 1);
+    out.push_back(std::move(p));
+  }
+  return out;
+}
+
+// Written whole to a file beside it and renamed over it, so a crash never leaves half a list.
+std::expected<void, std::string> save_places(const std::vector<shell::place_t> &places)
+{
+  const auto file = places_file();
+  if (file.empty())
+    return std::unexpected(std::string("no folder for settings"));
+  std::error_code error;
+  std::filesystem::create_directories(as_path(config_dir()), error);
+  const auto temporary = file + ".new";
+  {
+    std::ofstream out(as_path(temporary), std::ios::binary | std::ios::trunc);
+    out << "# vui explorer places: kind, name and path, separated by tabs\n";
+    for (const auto &p : places)
+      out << (p.kind == shell::place_t::kind_t::home ? "home" : "folder") << '\t' << p.name << '\t' << p.path << '\n';
+    if (!out)
+      return std::unexpected("cannot write " + temporary);
+  }
+  std::filesystem::rename(as_path(temporary), as_path(file), error);
+  if (error)
+    return std::unexpected("cannot save the places: " + error.message());
+  return {};
+}
+
+bool same_path(const std::string &a, const std::string &b)
+{
+#if defined(_WIN32)
+  return fold(a) == fold(b);
+#else
+  return a == b;
+#endif
+}
+
 // ---- icons, as paths in the unit square
 
 std::shared_ptr<const ui::path_t> make_path(const std::function<void(ui::path_t &)> &draw)
@@ -1009,6 +1090,11 @@ enum class action_t
   copy_path,
   copy_path_native,
   edit_path,
+  add_place,
+  remove_place,
+  place_up,
+  place_down,
+  reset_places,
   reveal,
   terminal,
   properties,
@@ -1021,7 +1107,7 @@ struct explorer_t
 {
   explicit explorer_t(std::string start)
     : start_at(std::move(start))
-    , places(shell::places())
+    , places(load_places())
     , drives(shell::drives())
   {
   }
@@ -1070,8 +1156,10 @@ struct explorer_t
   mutable bool editing_path = false;
   mutable bool path_had_focus = false;
   std::string typing;
-  // The menu is for the path bar rather than a row or the empty list.
+  // The menu is for the path bar rather than a row or the empty list; or for a place in the sidebar,
+  // by its index among the places and then the drives.
   bool menu_for_path = false;
+  std::optional<std::size_t> menu_place;
 
   // What is waiting for "are you sure" before it goes to the Recycle Bin, or for good.
   std::optional<shell::entry_t> confirming;
@@ -1203,6 +1291,77 @@ struct explorer_t
             scope.invalidate();
           });
       });
+  }
+
+  [[nodiscard]] bool is_in_places(const std::string &folder) const
+  {
+    return std::any_of(places.begin(), places.end(), [&](const shell::place_t &p) { return same_path(p.path, folder); });
+  }
+
+  void keep_places()
+  {
+    if (auto saved = save_places(places); !saved)
+      say(saved.error(), true);
+  }
+
+  void add_place(const std::string &folder)
+  {
+    if (is_in_places(folder) || places.size() >= place_buttons.size() - 4)
+      return;
+    auto name = folder.substr(std::min(folder.size(), folder.find_last_of("\\/") + 1));
+    if (name.empty())
+      name = folder;
+    places.push_back({name, folder, shell::place_t::kind_t::folder});
+    keep_places();
+    say("Added " + name + " to Places");
+  }
+
+  void act_on_place(ui::scope_t &scope, action_t action, std::size_t i)
+  {
+    const bool is_place = i < places.size();
+    const auto chosen = is_place ? places[i] : drives[i - places.size()];
+    switch (action)
+    {
+    case action_t::open:
+      go(scope, chosen.path);
+      break;
+    case action_t::copy_path:
+      scope.window().set_clipboard_text(portable(chosen.path));
+      say("Copied " + portable(chosen.path));
+      break;
+    case action_t::add_place:
+      add_place(chosen.path);
+      break;
+    case action_t::remove_place:
+      if (is_place)
+      {
+        places.erase(places.begin() + std::ptrdiff_t(i));
+        keep_places();
+        say("Removed " + chosen.name + " from Places");
+      }
+      break;
+    case action_t::place_up:
+      if (is_place && i > 0)
+      {
+        std::swap(places[i], places[i - 1]);
+        keep_places();
+      }
+      break;
+    case action_t::place_down:
+      if (is_place && i + 1 < places.size())
+      {
+        std::swap(places[i], places[i + 1]);
+        keep_places();
+      }
+      break;
+    case action_t::reset_places:
+      places = shell::places();
+      keep_places();
+      say("Places reset to the standard folders");
+      break;
+    default:
+      break;
+    }
   }
 
   // The path bar becomes a field holding the path, all of it selected and focused, so typing or
@@ -1449,9 +1608,10 @@ struct explorer_t
 
   // ---- the context menu
 
-  void open_menu(ui::scope_t &scope, std::optional<shell::entry_t> entry, vui::point_t at, bool for_path = false)
+  void open_menu(ui::scope_t &scope, std::optional<shell::entry_t> entry, vui::point_t at, bool for_path = false, std::optional<std::size_t> place = std::nullopt)
   {
     menu_for_path = for_path;
+    menu_place = place;
     menu_entry = std::move(entry);
     if (menu_entry && !menu_entry->directory)
       want_handlers(shell::join(path, menu_entry->name));
@@ -1478,7 +1638,25 @@ struct explorer_t
       items.push_back({.label = std::move(label), .kind = ui::menu_item_t::kind_t::header});
       menu_actions.emplace_back(action_t::refresh, 0);
     };
-    if (menu_entry)
+    if (menu_place)
+    {
+      const auto i = *menu_place;
+      const bool is_place = i < places.size();
+      add({.label = "Open"}, action_t::open);
+      rule();
+      if (is_place)
+      {
+        add({.label = "Move up", .enabled = i > 0}, action_t::place_up);
+        add({.label = "Move down", .enabled = i + 1 < places.size()}, action_t::place_down);
+        add({.label = "Remove from Places"}, action_t::remove_place);
+      }
+      else
+        add({.label = "Add to Places", .enabled = !is_in_places(drives[i - places.size()].path)}, action_t::add_place);
+      rule();
+      add({.label = "Copy path"}, action_t::copy_path);
+      add({.label = "Reset Places to the standard folders"}, action_t::reset_places);
+    }
+    else if (menu_entry)
     {
       const bool folder = menu_entry->directory;
       const auto ext = extension_of(menu_entry->name);
@@ -1487,6 +1665,8 @@ struct explorer_t
       if (!folder && found != handlers.end() && !found->second.empty() && found->second.front().is_default)
         by = found->second.front().name;
       add({.label = "Open", .detail = folder ? "Enter" : by}, action_t::open);
+      if (folder)
+        add({.label = "Add to Places", .enabled = !is_in_places(shell::join(path, menu_entry->name))}, action_t::add_place);
       if (!folder && !ext.empty())
       {
         rule();
@@ -1521,6 +1701,7 @@ struct explorer_t
       add({.label = "Copy path with backslashes"}, action_t::copy_path_native);
 #endif
       add({.label = "Edit path", .detail = "double-click"}, action_t::edit_path);
+      add({.label = "Add to Places", .enabled = !is_in_places(path)}, action_t::add_place);
       rule();
       add({.label = "Open terminal here"}, action_t::terminal);
       add({.label = std::string("Show in ") + shell::file_manager_name()}, action_t::reveal);
@@ -1550,7 +1731,13 @@ struct explorer_t
       return;
     const auto [action, extra] = menu_actions[index];
     const auto entry = menu_entry;
+    const auto place = menu_place;
     menu_at.reset();
+    if (place)
+    {
+      act_on_place(scope, action, *place);
+      return;
+    }
     const auto target = entry ? shell::join(path, entry->name) : path;
     const auto folder_of = entry && !entry->directory ? path : target;
     switch (action)
@@ -1581,6 +1768,9 @@ struct explorer_t
       break;
     case action_t::edit_path:
       edit_path(scope);
+      break;
+    case action_t::add_place:
+      add_place(target);
       break;
     case action_t::reveal:
       launch([target] { return shell::reveal(target); }, std::string("Shown in ") + shell::file_manager_name());
@@ -1858,8 +2048,9 @@ struct explorer_t
     auto typed = ui::subscribe<ui::line_edit_event_t>(path_edit.changed);
     auto entered = ui::subscribe<ui::line_edit_event_t>(path_edit.submitted);
     auto path_keys = ui::subscribe<vui::key_event_t>(path_edit.field());
+    auto place_menus = ui::subscribe<ui::context_event_t>(place_buttons);
     auto events = ui::merge(scope, presses, crumbs, places_pressed, filters, toggles, selections, activations, contexts, choices, dismissals, keys, answers, declined, bar_drags, bar_menus, typed,
-                            entered, path_keys);
+                            entered, path_keys, place_menus);
     while (auto event = co_await events)
     {
       switch (event->index())
@@ -1932,6 +2123,12 @@ struct explorer_t
       case 9:
         menu_at.reset();
         break;
+      case 18:
+      {
+        const auto &c = std::get<18>(*event);
+        open_menu(scope, std::nullopt, c.position, false, std::size_t(c.source - &place_buttons[0]));
+        break;
+      }
       case 13:
         if (std::get<13>(*event).phase == ui::drag_phase_t::begin && std::get<13>(*event).clicks == 2)
           edit_path(scope);
@@ -2144,6 +2341,17 @@ int probe_and_check()
     check(picture && picture->width > 0 && picture->height > 0 && picture->width >= picture->height && picture->rgba.size() == std::size_t(picture->width) * picture->height * 4,
           "a thumbnail of a picture" + (picture ? " (" + std::to_string(picture->width) + " x " + std::to_string(picture->height) + ")" : ": " + picture.error()));
 #endif
+  }
+  // The places, saved and read back, in a settings folder of the probe's own.
+  {
+    config_override = shell::join(scratch, "settings");
+    auto list = shell::places();
+    list.push_back({"probe place", shell::join(scratch, "folder"), shell::place_t::kind_t::folder});
+    const auto saved = save_places(list);
+    const auto loaded = load_places();
+    check(saved && loaded.size() == list.size() && loaded.back().name == "probe place" && loaded.back().path == list.back().path && loaded.front().kind == shell::place_t::kind_t::home,
+          "places are saved and read back" + (saved ? std::string() : ": " + saved.error()));
+    config_override.clear();
   }
   const auto gone = shell::remove_permanently(shell::join(scratch, "folder"));
   check(gone && !std::filesystem::exists(native(shell::join(scratch, "folder"))), "a folder is deleted permanently, with what is in it" + (gone ? std::string() : ": " + gone.error()));

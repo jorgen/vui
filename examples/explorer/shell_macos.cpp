@@ -153,6 +153,11 @@ std::string home()
   return "/";
 }
 
+std::string config_dir()
+{
+  return home() + "/Library/Application Support/vui/explorer";
+}
+
 std::vector<place_t> places()
 {
   const auto h = home();

@@ -179,6 +179,12 @@ std::string home()
   return known_folder(FOLDERID_Profile);
 }
 
+std::string config_dir()
+{
+  const auto base = known_folder(FOLDERID_RoamingAppData);
+  return base.empty() ? std::string() : base + "\\vui\\explorer";
+}
+
 std::vector<place_t> places()
 {
   std::vector<place_t> out;
