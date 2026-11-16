@@ -125,6 +125,12 @@ ui::rect_t rect_of(const frame_t &frame, const ui::pressable_t *source)
 
 constexpr auto ctrl = vui::modifier_t::control;
 constexpr auto shift = vui::modifier_t::shift;
+// What moves by word: Option on macOS, Control elsewhere.
+#if defined(__APPLE__)
+constexpr auto word = vui::modifier_t::alt;
+#else
+constexpr auto word = vui::modifier_t::control;
+#endif
 } // namespace
 
 TEST_CASE("ui clip: a clipping box keeps its size, and cuts what it holds when drawn and hit-tested")
@@ -210,11 +216,11 @@ TEST_CASE("ui editor: keys move, select and edit by code point, word and line")
   press(vui::key_t::left);
   press(vui::key_t::left);
   CHECK(e.caret.byte == 7);
-  press(vui::key_t::left, ctrl);
+  press(vui::key_t::left, word);
   CHECK(e.caret.byte == 6);
-  press(vui::key_t::left, ctrl);
+  press(vui::key_t::left, word);
   CHECK(e.caret.byte == 0);
-  press(vui::key_t::right, ctrl | shift);
+  press(vui::key_t::right, word | shift);
   CHECK(e.selected_text() == "hello ");
   CHECK(e.type("bye ", false) == ui::detail::text_editor_t::outcome_t::edited);
   CHECK(e.text() == "bye w\xc3\xb6rld\nsecond");
