@@ -60,6 +60,10 @@ On Windows, run `vcvars64.bat` before configuring.
   which reorders them. A view that sizes itself from `pressable_t::bounds()` must not place
   anything that can grow the box being measured, or it grows every frame; put it in a
   `box_t{.clip = true}`, which does not grow to fit its children.
+- `examples/task_manager/` has its own system layer (`system.h`, one file per platform). The macOS
+  file only compiles in CI; `vui_task_manager --probe` checks the layer there and on Linux.
+- The window keeps only the latest pointer move queued in one turn: a test that sends several must
+  let each through (settle) before the next.
 - No graphics library is linked. GL, EGL and Vulkan are loaded at run time (G6, G31). The UI
   renderer prefers Vulkan and falls back to GL (G32). Its SPIR-V is committed in
   `src/shaders/ui_spirv.h`, and only the `vui_shaders` target (slangc) regenerates it.

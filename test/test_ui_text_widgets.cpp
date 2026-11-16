@@ -426,3 +426,41 @@ TEST_CASE("ui text edit: a read-only log takes lines from its parent, keeps the 
           CHECK(root.log.selected_text().starts_with("line 50\nline 51\n"));
         });
 }
+
+TEST_CASE("ui hover: a subscriber is told where the pointer is over its pressable, and when it leaves")
+{
+  struct root_t
+  {
+    ui::pressable_t area;
+    std::vector<ui::hover_event_t> seen;
+
+    ui::node_t view() const
+    {
+      return ui::column_t{.padding = 10, .children = {ui::box_t{.size = {100, 50}, .color = {0.2f, 0.2f, 0.2f, 1}, .events = area}}};
+    }
+    ui::behaviour_t behave(ui::scope_t &)
+    {
+      auto hovers = ui::subscribe<ui::hover_event_t>(area);
+      while (auto hover = co_await hovers)
+        seen.push_back(*hover);
+    }
+  } root;
+  frame_t frame;
+  drive(root, frame,
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          // The window keeps only the latest of the moves queued in one turn, so one per turn.
+          window.impl()->on_input(vui::pointer_move_event_t{{30, 20}});
+          co_await settle(loop);
+          window.impl()->on_input(vui::pointer_move_event_t{{60, 40}});
+          co_await settle(loop);
+          window.impl()->on_input(vui::pointer_move_event_t{{300, 200}});
+          co_await settle(loop);
+          REQUIRE(root.seen.size() == 3);
+          CHECK(root.seen[0].source == &root.area);
+          CHECK(root.seen[0].inside);
+          CHECK(root.seen[0].position == vui::point_t{30, 20});
+          CHECK(root.seen[1].position == vui::point_t{60, 40});
+          CHECK_FALSE(root.seen[2].inside);
+        });
+}

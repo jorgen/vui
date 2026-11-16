@@ -180,6 +180,16 @@ struct drag_event_t
   int clicks = 1;
 };
 
+// Where the pointer is over a pressable, sent on every move while it hovers there and once with
+// `inside` false when it leaves (G51): a row under the pointer, a value under a chart's crosshair.
+// Only what subscribes pays for it; nothing is rebuilt for a move otherwise.
+struct hover_event_t
+{
+  const pressable_t *source = nullptr;
+  point_t position;
+  bool inside = true;
+};
+
 // What a text input reads: keys and typed text in one queue, in the order they came. A key and the
 // text it typed are separate events, and ui::merge over a key subscription and a text one takes
 // turns between them rather than keeping that order, so a text input subscribes to this (G50).
@@ -388,13 +398,15 @@ class pressable_t : public detail::source_t<press_event_t>,
                     public detail::source_t<key_event_t>,
                     public detail::source_t<typing_event_t>,
                     public detail::source_t<drag_event_t>,
-                    public detail::source_t<wheel_event_t>
+                    public detail::source_t<wheel_event_t>,
+                    public detail::source_t<hover_event_t>
 {
   using presses_t = detail::source_t<press_event_t>;
   using keys_t = detail::source_t<key_event_t>;
   using texts_t = detail::source_t<typing_event_t>;
   using drags_t = detail::source_t<drag_event_t>;
   using wheels_t = detail::source_t<wheel_event_t>;
+  using hovers_t = detail::source_t<hover_event_t>;
 
 public:
   pressable_t() = default;
@@ -413,6 +425,7 @@ public:
     , texts_t(std::move(other))
     , drags_t(std::move(other))
     , wheels_t(std::move(other))
+    , hovers_t(std::move(other))
     , _focusable(other._focusable)
     , _text_input(other._text_input)
   {
@@ -424,6 +437,7 @@ public:
     texts_t::operator=(std::move(other));
     drags_t::operator=(std::move(other));
     wheels_t::operator=(std::move(other));
+    hovers_t::operator=(std::move(other));
     _focusable = other._focusable;
     _text_input = other._text_input;
     return *this;

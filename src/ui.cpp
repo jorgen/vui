@@ -495,6 +495,8 @@ public:
     _pointer = to_logical(position);
     _has_pointer = true;
     hover(_pointer);
+    if (_hovered)
+      hovering(_hovered, true);
     if (_held.source)
       drag(_held.source, drag_phase_t::move, _pointer, modifiers, _clicks);
   }
@@ -653,6 +655,13 @@ public:
     }
     if (source)
       set_flag(source, &pressable_t::_focus_visible, visible);
+  }
+
+  void hovering(const pressable_t *source, bool inside)
+  {
+    auto &hovers = static_cast<detail::source_t<hover_event_t> &>(*const_cast<pressable_t *>(source));
+    if (hovers.subscribed())
+      hovers.emit(hover_event_t{source, _pointer, inside}, *this);
   }
 
   void drag(const pressable_t *source, drag_phase_t phase, point_t position, modifier_t modifiers, int clicks)
@@ -1602,7 +1611,10 @@ private:
     if (source == _hovered)
       return;
     if (_hovered)
+    {
       set_flag(_hovered, &pressable_t::_hovered, false);
+      hovering(_hovered, false);
+    }
     _hovered = source;
     if (source)
       set_flag(source, &pressable_t::_hovered, true);

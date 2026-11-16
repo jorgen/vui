@@ -705,3 +705,35 @@ Measured on Windows at 150%: typing, Shift and Ctrl selection, the clipboard, dr
 wheel and the scrollbar in `vui_ui_text`. Not yet: undo, input method composition (only committed
 text arrives), word wrap, a horizontal scrollbar, a blinking caret, scrolling while a drag rests
 outside the edit, and a proportional-font line edit.
+
+## G51. The task manager: a demo with a system layer under it, and hover events
+
+`examples/task_manager/` is the advanced example: CPU, per-core and memory charts, a heatmap of
+every core, a process table sorted by any column and filtered as you type, a panel for the selected
+process and a log of processes starting and exiting. What it decided:
+
+- **A system layer of its own.** `system.h` is one probe with raw counters, never rates; each
+  platform has a file and only one compiles. Windows takes every process with its threads, times and
+  working set from one `NtQuerySystemInformation` call, which costs about 4 ms for 340 processes, and
+  swap from the page file list rather than the commit charge, which counted 5 GB of a 5 GB page
+  file as used when 540 MB was. Linux reads `/proc`. macOS uses mach, libproc and sysctl; another
+  user's process answers only to root, so its row is marked partial rather than dropped, and
+  `proc_taskinfo` times are converted from mach absolute time, which is nanoseconds only on Intel.
+  `vui_task_manager --probe` checks a pair of snapshots without a window, and CI runs it on every
+  platform, which is the only way the macOS file is exercised.
+- **Sampling is off the loop.** A thread samples once a second and posts each snapshot through a
+  `vio::event_pipe_t`; the behaviour that owns the pipe owns the thread too, declared after it, so the
+  thread is joined before the pipe goes.
+- **`hover_event_t`**: where the pointer is over a pressable, on every move while it is there and
+  once when it leaves. A table needs the row under the pointer and a chart the sample under it, and a
+  pressable per row would take the presses a focusable table needs for its keyboard. Only a source
+  with a subscriber is sent one. The window keeps only the latest of the pointer moves queued in one
+  turn, so a test must let each move through before sending the next.
+- **Charts fill what they are given**: a chart's height is a minimum, and mounted in a box that hands
+  out more, it draws to its bounds. At 150% a 1440 by 960 window is 960 by 640 units, and the first
+  layout, with fixed heights, ran off the bottom.
+
+Measured: layout was 12 ms per frame in a Debug build with 364 texts. Counting placements showed no
+layout blow-up -- skipping the space handed out while measuring changed nothing -- and the time is
+HarfBuzz shaping every text again whenever its component rebuilds. In Release it is 0.6 to 1.7 ms. A
+cache of shaped runs is the lever if it ever matters.

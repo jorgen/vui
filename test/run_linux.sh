@@ -17,6 +17,7 @@ export DISPLAY=:99 WAYLAND_DISPLAY=vio-test
 "$binary" -tce="gl:*,vulkan:*"
 ASAN_OPTIONS="detect_leaks=0${ASAN_OPTIONS:+:$ASAN_OPTIONS}" "$binary" -tc="gl:*,vulkan:*"
 examples=$(dirname "$binary")
+"$examples/vui_task_manager" --probe
 export ASAN_OPTIONS="detect_leaks=0${ASAN_OPTIONS:+:$ASAN_OPTIONS}"
 for backend in x11 wayland; do
   export VUI_BACKEND=$backend
