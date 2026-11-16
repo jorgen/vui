@@ -93,6 +93,15 @@ std::expected<void, std::string> reveal(const std::string &path);
 [[nodiscard]] bool has_properties();
 std::expected<void, std::string> properties(const std::string &path);
 
+// Moves a file or a folder, with everything in it, to the Recycle Bin or Trash, from where it can be
+// restored. May take a while for a big folder.
+std::expected<void, std::string> trash(const std::string &path);
+// Deletes a file or a folder with everything in it, for good. A link inside is deleted itself, never
+// followed into what it points at. The explorer asks twice as hard before it calls this.
+std::expected<void, std::string> remove_permanently(const std::string &path);
+// "Recycle Bin" or "Trash".
+[[nodiscard]] const char *trash_name();
+
 // What the system file manager is called, for "Show in ...".
 [[nodiscard]] const char *file_manager_name();
 

@@ -9,7 +9,8 @@
 // folders and drives; a table sorted by any column (folders first, "file2" before "file10"),
 // filtered as you type, driven by the keyboard (arrows, Enter, Backspace, typing jumps to a name);
 // a context menu with Open, the applications that open the file, Copy path, Show in the system's
-// file manager, Open terminal here and Properties; a preview of text files; and a status bar that
+// file manager, Open terminal here, Delete -- to the Recycle Bin or Trash, after asking -- Delete
+// permanently (Shift+Delete, after asking harder) and Properties; a preview of text files; and a status bar that
 // says what each folder cost.
 //
 // `vui_explorer --probe` exercises the shell layer without a window, for CI.
@@ -398,6 +399,10 @@ public:
   {
     return _body;
   }
+  [[nodiscard]] ui::rect_t body_bounds() const noexcept
+  {
+    return _body.bounds();
+  }
 
   // A new folder: what is known of it so far, nothing selected, at the top. `select` names what to
   // select once it appears: the folder just left, when going up.
@@ -421,6 +426,34 @@ public:
     // Not dirty: order() merges the new rows into what it has.
     ui::invalidate(scope, *this);
   }
+  // A row that has gone -- moved to the Recycle Bin -- leaves the selection on the row that took its
+  // place, as Explorer does.
+  void remove(ui::scope_t &scope, const std::string &name)
+  {
+    long at = -1;
+    for (std::size_t i = 0; i < _entries.size(); ++i)
+    {
+      if (_entries[i].name == name)
+        at = long(i);
+    }
+    if (at < 0)
+      return;
+    long position = 0;
+    const auto &o = order();
+    for (std::size_t i = 0; i < o.size(); ++i)
+    {
+      if (long(o[i]) == at)
+        position = long(i);
+    }
+    _entries.erase(_entries.begin() + at);
+    _folded.erase(_folded.begin() + at);
+    dirty();
+    const auto &after = order();
+    _selected = after.empty() ? -1 : long(after[std::size_t(std::min(position, long(after.size()) - 1))]);
+    ui::emit(selected, _selected, scope);
+    ui::invalidate(scope, *this);
+  }
+
   // A fresh listing of the folder already shown: keep the selection by name, and the scroll.
   void replace(ui::scope_t &scope, std::vector<shell::entry_t> entries)
   {
@@ -880,6 +913,54 @@ private:
   mutable std::chrono::nanoseconds _sort_cost{0};
 };
 
+// ---- "are you sure": a small dialog over everything, answered with a button, Enter or Escape
+
+class confirm_t
+{
+public:
+  struct props_t
+  {
+    std::string title;
+    std::string message;
+    std::string confirm;
+    // What cannot be undone says so in red.
+    bool danger = false;
+    friend bool operator==(const props_t &, const props_t &) = default;
+  };
+  props_t props;
+  ui::event_source_t<bool> answered;
+  // Everywhere outside the dialog: a press there is No.
+  ui::pressable_t dismiss;
+
+  ui::node_t view() const
+  {
+    const auto &t = ui::theme();
+    return ui::box_t{.size = {400, 0},
+                     .color = t.menu,
+                     .radius = 10,
+                     .border_width = 1,
+                     .border_color = t.border,
+                     .shadow = {.x = 0, .y = 8, .blur = 24, .color = {0, 0, 0, 0.6f}},
+                     .padding = 20,
+                     .align_x = ui::align_t::stretch,
+                     .children = {ui::column_t{.gap = 12,
+                                               .align = ui::align_t::stretch,
+                                               .children = {text(props.title, 16, t.text), ui::label({.text = props.message, .muted = !props.danger, .size = 13, .color = props.danger ? error_color : ui::color_t{0, 0, 0, 0}}),
+                                                            ui::row_t{.gap = 10,
+                                                                      .children = {ui::spacer_t{}, ui::mount(_no, {.label = "Cancel"}), ui::mount(_yes, {.label = props.confirm, .primary = true})}}}}}};
+  }
+
+  ui::behaviour_t behave(ui::scope_t &scope)
+  {
+    auto presses = ui::subscribe<ui::press_event_t>(_yes.press, _no.press);
+    while (auto press = co_await presses)
+      ui::emit(answered, press->source == &_yes.press, scope);
+  }
+
+private:
+  ui::button_t _yes, _no;
+};
+
 // ---- the window
 
 enum class action_t
@@ -890,6 +971,8 @@ enum class action_t
   reveal,
   terminal,
   properties,
+  trash,
+  remove,
   refresh,
 };
 
@@ -936,6 +1019,10 @@ struct explorer_t
   std::uint64_t preview_generation = 0;
   std::string preview_note;
 
+  // What is waiting for "are you sure" before it goes to the Recycle Bin, or for good.
+  std::optional<shell::entry_t> confirming;
+  bool confirming_permanent = false;
+
   // The context menu, while open: where, for what, and what each item does.
   std::optional<vui::point_t> menu_at;
   std::optional<shell::entry_t> menu_entry;
@@ -953,6 +1040,7 @@ struct explorer_t
   file_table_t table;
   ui::text_edit_t preview;
   ui::context_menu_t menu;
+  confirm_t confirm;
 
   pipe_t *pipe = nullptr;
   worker_t *lister = nullptr;
@@ -1183,6 +1271,48 @@ struct explorer_t
       });
   }
 
+  void ask_to_trash(const shell::entry_t &entry, bool permanent)
+  {
+    menu_at.reset();
+    confirming = entry;
+    confirming_permanent = permanent;
+  }
+
+  // On the helper: a big folder takes a while to move, and the window should not wait for it.
+  void trash_confirmed(ui::scope_t &)
+  {
+    if (!confirming)
+      return;
+    const auto entry = *confirming;
+    const bool permanent = confirming_permanent;
+    confirming.reset();
+    const auto target = shell::join(path, entry.name);
+    const auto folder = path;
+    say(permanent ? "Deleting " + entry.name + "..." : "Moving " + entry.name + " to the " + shell::trash_name() + "...");
+    auto *p = pipe;
+    helper->post(
+      [this, p, target, folder, entry, permanent]
+      {
+        auto r = permanent ? shell::remove_permanently(target) : shell::trash(target);
+        p->post_event(
+          [this, r, folder, entry, permanent](ui::scope_t &scope)
+          {
+            if (!r)
+            {
+              say((permanent ? "Could not delete " : "Could not move ") + entry.name + ": " + r.error(), true);
+              scope.invalidate();
+              return;
+            }
+            say(permanent ? "Deleted " + entry.name + " permanently" : "Moved " + entry.name + " to the " + shell::trash_name());
+            if (auto it = listings.find(folder); it != listings.end())
+              std::erase_if(it->second, [&](const shell::entry_t &e) { return e.name == entry.name; });
+            if (path == folder)
+              table.remove(scope, entry.name);
+            scope.invalidate();
+          });
+      });
+  }
+
   void activate(ui::scope_t &scope, long index)
   {
     if (index < 0)
@@ -1254,6 +1384,9 @@ struct explorer_t
       add({.label = "Copy path", .detail = "Ctrl+Shift+C"}, action_t::copy_path);
       add({.label = std::string("Show in ") + shell::file_manager_name()}, action_t::reveal);
       add({.label = "Open terminal here"}, action_t::terminal);
+      rule();
+      add({.label = "Delete", .detail = "Del"}, action_t::trash);
+      add({.label = "Delete permanently", .detail = "Shift+Del"}, action_t::remove);
       if (shell::has_properties())
         add({.label = "Properties", .detail = "Alt+Enter"}, action_t::properties);
     }
@@ -1310,6 +1443,14 @@ struct explorer_t
       break;
     case action_t::properties:
       launch([target] { return shell::properties(target); }, "");
+      break;
+    case action_t::trash:
+      if (entry)
+        ask_to_trash(*entry, false);
+      break;
+    case action_t::remove:
+      if (entry)
+        ask_to_trash(*entry, true);
       break;
     case action_t::refresh:
       go(scope, path, false);
@@ -1437,7 +1578,7 @@ struct explorer_t
   ui::node_t status_bar() const
   {
     const auto &t = ui::theme();
-    std::string facts = grouped(table.shown()) + " items";
+    std::string facts = grouped(table.shown()) + (table.shown() == 1 ? " item" : " items");
     if (table.shown() != table.entries().size())
       facts += " (of " + grouped(table.entries().size()) + ")";
     if (loading)
@@ -1458,13 +1599,34 @@ struct explorer_t
                                    ui::row_t{.gap = 12,
                                              .align = ui::align_t::stretch,
                                              .grow = 1,
-                                             .children = {sidebar(), ui::box_t{.color = clear, .grow = 1, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {ui::mount(table, {.filter = filter, .show_hidden = show_hidden, .types_version = types_version, .passive = menu_at.has_value()})}},
+                                             .children = {sidebar(), ui::box_t{.color = clear, .grow = 1, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {ui::mount(table, {.filter = filter, .show_hidden = show_hidden, .types_version = types_version, .passive = menu_at.has_value() || confirming.has_value()})}},
                                                           details()}},
                                    status_bar()}};
     // The menu, over everything, where it was opened.
     ui::box_t whole{.color = clear, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {std::move(page)}};
     if (menu_at)
       whole.children.push_back(ui::at_t{.x = float(menu_at->x), .y = float(menu_at->y), .children = {ui::mount(menu, {.items = menu_items}).on_top(menu.dismiss)}});
+    if (confirming)
+    {
+      // Centred over the list, near its top.
+      const auto b = table.body_bounds();
+      const std::string where = shell::trash_name();
+      confirm_t::props_t ask;
+      if (confirming_permanent)
+      {
+        ask.title = "Permanently delete \"" + confirming->name + "\"?";
+        ask.message = confirming->directory ? "The folder and everything in it will be deleted.\nThis cannot be undone." : "It will not go to the " + where + ".\nThis cannot be undone.";
+        ask.confirm = "Delete permanently";
+        ask.danger = true;
+      }
+      else
+      {
+        ask.title = "Move \"" + confirming->name + "\" to the " + where + "?";
+        ask.message = confirming->directory ? "The folder and everything in it can be restored from the " + where + "." : "It can be restored from the " + where + ".";
+        ask.confirm = "Move to " + where;
+      }
+      whole.children.push_back(ui::at_t{.x = float(b.x + b.width / 2 - 200), .y = float(b.y + 60), .children = {ui::mount(confirm, std::move(ask)).on_top(confirm.dismiss)}});
+    }
     return whole;
   }
 
@@ -1493,7 +1655,9 @@ struct explorer_t
     auto choices = ui::subscribe<ui::menu_choice_t>(menu.chosen);
     auto dismissals = ui::subscribe<ui::press_event_t>(menu.dismiss);
     auto keys = ui::subscribe<vui::key_event_t>(table.body());
-    auto events = ui::merge(scope, presses, crumbs, places_pressed, filters, toggles, selections, activations, contexts, choices, dismissals, keys);
+    auto answers = ui::subscribe<bool>(confirm.answered);
+    auto declined = ui::subscribe<ui::press_event_t>(confirm.dismiss);
+    auto events = ui::merge(scope, presses, crumbs, places_pressed, filters, toggles, selections, activations, contexts, choices, dismissals, keys, answers, declined);
     while (auto event = co_await events)
     {
       switch (event->index())
@@ -1566,6 +1730,15 @@ struct explorer_t
       case 9:
         menu_at.reset();
         break;
+      case 11:
+        if (std::get<11>(*event))
+          trash_confirmed(scope);
+        else
+          confirming.reset();
+        break;
+      case 12:
+        confirming.reset();
+        break;
       case 10:
       {
         const auto &key = std::get<10>(*event);
@@ -1574,6 +1747,15 @@ struct explorer_t
         const bool alt = vui::has(key.modifiers, vui::modifier_t::alt);
         const bool ctrl = vui::has(key.modifiers, vui::modifier_t::control) || vui::has(key.modifiers, vui::modifier_t::super);
         const bool shift = vui::has(key.modifiers, vui::modifier_t::shift);
+        // While asking, Enter is yes and Escape is no; nothing else happens.
+        if (confirming)
+        {
+          if (key.key == vui::key_t::enter || key.key == vui::key_t::keypad_enter)
+            trash_confirmed(scope);
+          else if (key.key == vui::key_t::escape)
+            confirming.reset();
+          break;
+        }
         // While the menu is open it has the keys it wants, and Escape closes it.
         if (menu_at)
         {
@@ -1601,6 +1783,11 @@ struct explorer_t
         }
         else if (key.key == vui::key_t::f5)
           go(scope, path, false);
+        else if (key.key == vui::key_t::delete_key)
+        {
+          if (const auto *e = table.selected_entry())
+            ask_to_trash(*e, shift);
+        }
         else if ((shift && key.key == vui::key_t::f10) || key.key == vui::key_t::menu)
         {
           std::optional<shell::entry_t> entry;
@@ -1690,6 +1877,26 @@ int probe_and_check()
                       return false;
                     });
   check(seen <= 1, "a listing stops when asked");
+
+  // Deleting, in a folder of the probe's own under home.
+  const auto scratch = shell::join(h, ".vui_explorer_probe");
+  const auto native = [](const std::string &p) { return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(p.data()), p.size())); };
+  std::filesystem::create_directories(native(shell::join(shell::join(scratch, "folder"), "deep")), ec);
+  {
+    std::ofstream(native(shell::join(shell::join(shell::join(scratch, "folder"), "deep"), "x.txt"))) << "x\n";
+    std::ofstream(native(shell::join(scratch, "file.txt"))) << "y\n";
+  }
+  const auto gone = shell::remove_permanently(shell::join(scratch, "folder"));
+  check(gone && !std::filesystem::exists(native(shell::join(scratch, "folder"))), "a folder is deleted permanently, with what is in it" + (gone ? std::string() : ": " + gone.error()));
+  // Only where asked: anywhere else it would leave a file in the user's own Trash.
+  if (const char *t = std::getenv("VUI_PROBE_TRASH"); t && std::strcmp(t, "1") == 0)
+  {
+    const auto moved = shell::trash(shell::join(scratch, "file.txt"));
+    check(moved && !std::filesystem::exists(native(shell::join(scratch, "file.txt"))), std::string("a file moves to the ") + shell::trash_name() + (moved ? std::string() : ": " + moved.error()));
+  }
+  else
+    std::printf("  (moving to the %s not tried: set VUI_PROBE_TRASH=1)\n", shell::trash_name());
+  std::filesystem::remove_all(native(scratch), ec);
   return failures == 0 ? 0 : 1;
 }
 } // namespace

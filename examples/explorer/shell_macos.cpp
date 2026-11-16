@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -307,6 +308,35 @@ bool has_properties()
 std::expected<void, std::string> properties(const std::string &)
 {
   return std::unexpected(std::string("no properties window on this system"));
+}
+
+std::expected<void, std::string> trash(const std::string &path)
+{
+  // The File Manager's move to the Trash: deprecated in favour of NSFileManager, which would need
+  // Objective-C, and still what Finder's own Trash is.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  char *moved = nullptr;
+  const OSStatus status = FSPathMoveObjectToTrashSync(path.c_str(), &moved, kFSFileOperationDefaultOptions);
+#pragma clang diagnostic pop
+  std::free(moved);
+  if (status != noErr)
+    return std::unexpected("could not move it to the Trash (error " + std::to_string(int(status)) + ")");
+  return {};
+}
+
+std::expected<void, std::string> remove_permanently(const std::string &path)
+{
+  std::error_code error;
+  std::filesystem::remove_all(std::filesystem::path(path), error);
+  if (error)
+    return std::unexpected("could not delete it: " + error.message());
+  return {};
+}
+
+const char *trash_name()
+{
+  return "Trash";
 }
 
 const char *file_manager_name()

@@ -788,3 +788,28 @@ folder to be read to the end.
 The first folder is asked for while the window and its renderer are still starting, so its time to
 first rows measures start-up; the status bar says "opened at start-up" for it rather than a number
 that blames the folder.
+
+## G54. The explorer deletes, to the Recycle Bin or for good, and always asks
+
+Delete moves the selection to the Recycle Bin (Windows) or Trash (Linux, macOS); Shift+Delete, or
+"Delete permanently" in the menu, deletes it outright. Both ask first, in a dialog that says what
+will happen -- the permanent one in red, saying it cannot be undone -- answered with its buttons,
+Enter or Escape, and a press outside it is No. The work runs on the helper thread, since a big
+folder takes a while, and the row goes when it succeeds, with the selection on the row that took
+its place.
+
+- Windows uses the shell's delete, `SHFileOperationW`, with undo allowed for the Recycle Bin and
+  without for the permanent delete, which also clears read-only files that `remove_all` refuses.
+- Linux follows the freedesktop.org Trash specification: the item is renamed into
+  `~/.local/share/Trash/files` under a free name, with a `.trashinfo` holding its percent-encoded
+  path and the time, which is what lets a file manager restore it. Something on another file system
+  than the home trash is refused rather than copied. The first version made the trash with one
+  `mkdir` per level and so failed on a home with no `~/.local`; the probe found it.
+- macOS uses the File Manager's move to the Trash, deprecated but what Finder's Trash is, because
+  `NSFileManager` would need Objective-C.
+- The permanent delete elsewhere is `std::filesystem::remove_all`, which deletes a link itself and
+  never follows it into what it points at.
+
+`--probe` deletes a scratch folder permanently on every platform, and moves a file to the Trash
+only with `VUI_PROBE_TRASH=1`, which CI sets: anywhere else it would leave a file in the user's own
+Trash.

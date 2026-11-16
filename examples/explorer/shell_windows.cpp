@@ -415,6 +415,49 @@ std::expected<void, std::string> properties(const std::string &path)
   return {};
 }
 
+std::expected<void, std::string> trash(const std::string &path)
+{
+  // The shell's own delete, with undo allowed: the Recycle Bin. No dialogs -- the explorer has
+  // asked already -- and the list of paths ends with two NULs.
+  auto from = wide(path);
+  from.push_back(L'\0');
+  from.push_back(L'\0');
+  SHFILEOPSTRUCTW op{};
+  op.wFunc = FO_DELETE;
+  op.pFrom = from.c_str();
+  op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+  const int r = SHFileOperationW(&op);
+  if (r != 0)
+    return std::unexpected("could not move it to the Recycle Bin (error " + std::to_string(r) + ")");
+  if (op.fAnyOperationsAborted)
+    return std::unexpected(std::string("moving it to the Recycle Bin was cancelled"));
+  return {};
+}
+
+std::expected<void, std::string> remove_permanently(const std::string &path)
+{
+  // The same shell delete without undo: it also clears read-only files, which a plain remove_all
+  // refuses on Windows.
+  auto from = wide(path);
+  from.push_back(L'\0');
+  from.push_back(L'\0');
+  SHFILEOPSTRUCTW op{};
+  op.wFunc = FO_DELETE;
+  op.pFrom = from.c_str();
+  op.fFlags = FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+  const int r = SHFileOperationW(&op);
+  if (r != 0)
+    return std::unexpected("could not delete it (error " + std::to_string(r) + ")");
+  if (op.fAnyOperationsAborted)
+    return std::unexpected(std::string("deleting it was cancelled"));
+  return {};
+}
+
+const char *trash_name()
+{
+  return "Recycle Bin";
+}
+
 const char *file_manager_name()
 {
   return "Explorer";

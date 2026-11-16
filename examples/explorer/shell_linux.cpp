@@ -15,7 +15,9 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <cerrno>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -550,6 +552,82 @@ bool has_properties()
 std::expected<void, std::string> properties(const std::string &)
 {
   return std::unexpected(std::string("no properties window on this system"));
+}
+
+// The freedesktop.org Trash specification: the item moves into Trash/files under a name not yet
+// taken there, and Trash/info gets a .trashinfo saying where it came from and when, which is what
+// lets a file manager restore it. Only the home trash: something on another file system cannot be
+// renamed into it, and that is reported rather than copied.
+std::expected<void, std::string> trash(const std::string &path)
+{
+  const auto base = env("XDG_DATA_HOME", home() + "/.local/share") + "/Trash";
+  const auto files = base + "/files";
+  const auto info = base + "/info";
+  // The whole path: a fresh home has no ~/.local yet, and the trash is made on first use.
+  std::error_code made;
+  std::filesystem::create_directories(files, made);
+  std::filesystem::create_directories(info, made);
+  if (made)
+    return std::unexpected("cannot make the Trash: " + made.message());
+  ::chmod(base.c_str(), 0700);
+  auto name = path.substr(path.rfind('/') + 1);
+  std::string taken = name;
+  int fd = -1;
+  for (int n = 1; n < 10000; ++n)
+  {
+    fd = ::open((info + "/" + taken + ".trashinfo").c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+    if (fd >= 0)
+      break;
+    if (errno != EEXIST)
+      return std::unexpected("cannot write to the Trash: " + std::string(std::strerror(errno)));
+    taken = name + "." + std::to_string(n);
+  }
+  if (fd < 0)
+    return std::unexpected(std::string("the Trash has too many items of that name"));
+  // Path= is percent-encoded, all but the unreserved characters and the slash.
+  std::string encoded;
+  for (const unsigned char c : path)
+  {
+    if (std::isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~')
+      encoded += char(c);
+    else
+    {
+      char b[4];
+      std::snprintf(b, sizeof b, "%%%02X", c);
+      encoded += b;
+    }
+  }
+  const std::time_t now = std::time(nullptr);
+  std::tm local{};
+  localtime_r(&now, &local);
+  char date[32];
+  std::strftime(date, sizeof date, "%Y-%m-%dT%H:%M:%S", &local);
+  const auto record = "[Trash Info]\nPath=" + encoded + "\nDeletionDate=" + date + "\n";
+  const bool written = ::write(fd, record.data(), record.size()) == ssize_t(record.size());
+  ::close(fd);
+  if (!written || ::rename(path.c_str(), (files + "/" + taken).c_str()) != 0)
+  {
+    const int e = written ? errno : EIO;
+    ::unlink((info + "/" + taken + ".trashinfo").c_str());
+    if (e == EXDEV)
+      return std::unexpected(std::string("it is on another file system than the Trash"));
+    return std::unexpected("cannot move it to the Trash: " + std::string(std::strerror(e)));
+  }
+  return {};
+}
+
+std::expected<void, std::string> remove_permanently(const std::string &path)
+{
+  std::error_code error;
+  std::filesystem::remove_all(std::filesystem::path(path), error);
+  if (error)
+    return std::unexpected("could not delete it: " + error.message());
+  return {};
+}
+
+const char *trash_name()
+{
+  return "Trash";
 }
 
 const char *file_manager_name()

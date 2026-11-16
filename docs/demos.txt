@@ -11,7 +11,8 @@ vui_task_manager
 vui_explorer
   A file explorer. Folders open at once and fill in as they are read. Right-click a file for the
   applications that open it. Keys: arrows, Enter, Backspace (up), Alt+Left/Right (back/forward),
-  F5, Shift+F10 (menu); start typing to jump to a name.
+  F5, Shift+F10 (menu), Delete (to the Recycle Bin), Shift+Delete (for good); both ask first.
+  Start typing to jump to a name.
 
 Graphics come from your graphics driver (Vulkan, or OpenGL). The executables are not signed, so
 Windows may ask before running one the first time.
