@@ -159,6 +159,47 @@ struct press_event_t
   point_t position;
 };
 
+// The left button on a pressable, for what a press is too coarse for: placing a caret, selecting
+// by dragging. `begin` when it goes down on the pressable, `move` for every pointer move while it
+// stays down, wherever the pointer is, and `end` when it is released. `clicks` counts quick
+// presses in the same place: 2 on a double click, 3 on a triple. Positions are window layout
+// units; subtract `source->bounds()` for the box's own.
+enum class drag_phase_t : std::uint8_t
+{
+  begin,
+  move,
+  end,
+};
+
+struct drag_event_t
+{
+  const pressable_t *source = nullptr;
+  drag_phase_t phase = drag_phase_t::begin;
+  point_t position;
+  modifier_t modifiers = modifier_t::none;
+  int clicks = 1;
+};
+
+// What a text input reads: keys and typed text in one queue, in the order they came. A key and the
+// text it typed are separate events, and ui::merge over a key subscription and a text one takes
+// turns between them rather than keeping that order, so a text input subscribes to this (G50).
+struct typing_event_t
+{
+  std::variant<key_event_t, text_event_t> input;
+};
+
+// The wheel, in lines: positive `dy` is away from the user, which brings what is above into view.
+// It goes to the topmost pressable under the pointer that something subscribes to wheel events on,
+// so a scrolling area inside another takes the wheel first.
+struct wheel_event_t
+{
+  const pressable_t *source = nullptr;
+  double dx = 0;
+  double dy = 0;
+  point_t position;
+  modifier_t modifiers = modifier_t::none;
+};
+
 namespace detail
 {
 template <typename E>
@@ -226,6 +267,10 @@ public:
   void remove(subscription_core_t<E> *subscriber) noexcept
   {
     std::erase(_subscribers, subscriber);
+  }
+  [[nodiscard]] bool subscribed() const noexcept
+  {
+    return !_subscribers.empty();
   }
 
 private:
@@ -323,6 +368,13 @@ struct focusable_t
 };
 inline constexpr focusable_t focusable{};
 
+// `ui::pressable_t field{ui::text_input}`: a focusable one that takes typed text, to which Space is
+// text rather than a press.
+struct text_input_t
+{
+};
+inline constexpr text_input_t text_input{};
+
 // Something that can be pressed. It is a member of a component and its identity is its address, so
 // the box that shows it may be rebuilt freely. It also carries what the pointer is doing to it, for a
 // view to draw.
@@ -330,11 +382,19 @@ inline constexpr focusable_t focusable{};
 // A focusable one also takes keyboard focus (G46): a press on it, or Tab and Shift+Tab through the
 // focusable boxes in the order they are drawn. The focused one is sent every key, as a source of
 // key_event_t -- `ui::subscribe<key_event_t>(field)` -- and Space presses it, so whatever a press
-// does the keyboard does too.
-class pressable_t : public detail::source_t<press_event_t>, public detail::source_t<key_event_t>
+// does the keyboard does too. A text input is also sent keys and the window's typed text together,
+// in order, as typing_event_t (G50).
+class pressable_t : public detail::source_t<press_event_t>,
+                    public detail::source_t<key_event_t>,
+                    public detail::source_t<typing_event_t>,
+                    public detail::source_t<drag_event_t>,
+                    public detail::source_t<wheel_event_t>
 {
   using presses_t = detail::source_t<press_event_t>;
   using keys_t = detail::source_t<key_event_t>;
+  using texts_t = detail::source_t<typing_event_t>;
+  using drags_t = detail::source_t<drag_event_t>;
+  using wheels_t = detail::source_t<wheel_event_t>;
 
 public:
   pressable_t() = default;
@@ -342,17 +402,30 @@ public:
     : _focusable(true)
   {
   }
+  explicit pressable_t(text_input_t) noexcept
+    : _focusable(true)
+    , _text_input(true)
+  {
+  }
   pressable_t(pressable_t &&other) noexcept
     : presses_t(std::move(other))
     , keys_t(std::move(other))
+    , texts_t(std::move(other))
+    , drags_t(std::move(other))
+    , wheels_t(std::move(other))
     , _focusable(other._focusable)
+    , _text_input(other._text_input)
   {
   }
   pressable_t &operator=(pressable_t &&other) noexcept
   {
     presses_t::operator=(std::move(other));
     keys_t::operator=(std::move(other));
+    texts_t::operator=(std::move(other));
+    drags_t::operator=(std::move(other));
+    wheels_t::operator=(std::move(other));
     _focusable = other._focusable;
+    _text_input = other._text_input;
     return *this;
   }
 
@@ -371,6 +444,10 @@ public:
   {
     return _focusable;
   }
+  [[nodiscard]] bool text_input() const noexcept
+  {
+    return _text_input;
+  }
   // It has keyboard focus.
   [[nodiscard]] bool focused() const noexcept
   {
@@ -382,14 +459,24 @@ public:
   {
     return _focus_visible;
   }
+  // Where the box showing it was in the last frame, in window layout units and cut to whatever
+  // clips it (G50); empty until it has been drawn. A change rebuilds the component that shows it,
+  // so a view can fit what it shows to its own box, a frame later.
+  [[nodiscard]] rect_t bounds() const noexcept
+  {
+    return _bounds;
+  }
 
 private:
   friend class detail::runtime_t;
   bool _focusable = false;
+  bool _text_input = false;
   bool _hovered = false;
   bool _held = false;
   bool _focused = false;
   bool _focus_visible = false;
+  rect_t _bounds;
+  std::uint64_t _bounds_frame = 0;
 };
 
 // `while (auto event = co_await presses)` -- yields std::nullopt once the awaiting behaviour's scope
@@ -507,6 +594,11 @@ struct box_t
   edges_t padding;
   align_t align_x = align_t::center;
   align_t align_y = align_t::center;
+  // Draw and hit-test the children only inside the box, less its border (G50): a scrolling area, a
+  // field whose text is longer than it. A clipping box does not grow to fit its children along a
+  // dimension its `size` or its parent gives it; along one neither gives, it still does. The cut is
+  // a rectangle, so children can cover rounded corners.
+  bool clip = false;
   std::vector<node_t> children;
 };
 
@@ -525,6 +617,19 @@ public:
   // The platform's UI font, found at a known path: Segoe UI on Windows, the system font on macOS,
   // DejaVu Sans, Noto Sans or Liberation Sans on Linux. No fontconfig lookup (G40).
   static std::expected<font_t, std::string> system_default();
+  // The platform's fixed-width font, found the same way: Consolas, Menlo, DejaVu Sans Mono and kin.
+  static std::expected<font_t, std::string> system_monospace();
+
+  // The vertical metrics and the advance of "0" at `size`, in logical units and unrounded. On a
+  // fixed-width font the advance is every character's, which is what text_t::advance wants.
+  struct metrics_t
+  {
+    float advance = 0;
+    float ascent = 0;
+    float descent = 0;
+    float line_gap = 0;
+  };
+  [[nodiscard]] metrics_t metrics(float size) const;
 
   explicit operator bool() const noexcept
   {
@@ -559,6 +664,11 @@ struct text_t
   // sits on the maths axis, well below the middle of its line, and looks low without this. The
   // baseline moves with the top.
   bool tight = false;
+  // Above 0, a grid: the n-th code point starts n advances in, whatever the font says, and the text
+  // is that many advances wide (G50). Ligatures are off, so column arithmetic -- a caret, a
+  // selection, a slice of a long line -- is exact. Give it the font's own advance,
+  // `font.metrics(size).advance`, and a fixed-width font looks as designed.
+  float advance = 0;
 };
 
 // A vector shape for an icon, in a unit square with (0, 0) at the top left. Contours close
@@ -1287,6 +1397,21 @@ void emit(event_source_t<E> &source, const E &event, scope_t &scope)
   source.emit(event, detail::scope_runtime(scope));
 }
 
+namespace detail
+{
+void invalidate_component(runtime_t &runtime, void *component, node_t (*view)(const void *)) noexcept;
+}
+
+// Rebuild `component` at the next frame, from a behaviour of any component in its window: for state
+// changed from outside it, which no behaviour of its own woke up for -- a text edit a parent appended
+// to (G50). Nothing happens if it is not mounted.
+template <component C>
+void invalidate(scope_t &scope, const C &component)
+{
+  const auto node = mount(component);
+  detail::invalidate_component(detail::scope_runtime(scope), node.component, node.view);
+}
+
 // Mount a child the parent shares ownership of, like a list_t item: it lives until its behaviours
 // have ended, even after the parent drops it. For a popup the parent creates when it opens.
 template <component C>
@@ -1737,6 +1862,10 @@ struct run_t
   // Drawn this many times its layout size about its origin: a scaled mount (G45). Glyphs keep
   // their pixel size and move with their anchor.
   float scale = 1;
+  // Nothing of it is drawn outside this rectangle -- left, top, right, bottom in window layout
+  // units -- which a clipping box sets (G50). Unclipped, it is larger than any window.
+  static constexpr float clip_none = 1e9f;
+  float clip[4] = {-clip_none, -clip_none, clip_none, clip_none};
 };
 
 // One frame's worth of drawing, in painter's order. `prims` is assembled afresh every frame from

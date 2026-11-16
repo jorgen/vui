@@ -659,3 +659,49 @@ the targets are `vui` and `vui_ui`. vio is pinned by commit through cmake-dep li
 dependency, and `-DCMDEP_SOURCE_DIR_VIO` builds against a local checkout when the two change
 together. The CI image stays vio's: it already carries Xvfb, weston and every package the Linux
 backends need. Decisions keep their G numbers; earlier entries that say "the gui" mean vui.
+
+## G50. Text widgets are fixed-width, and the runtime learns to clip
+
+A label, a line edit and a text edit, the last both an input pane and a log. What each needed, and
+why it is shaped as it is:
+
+- **Fixed-width text on a grid.** `text_t::advance` places the n-th code point n advances in and
+  turns ligatures off, so a column is a multiplication and a caret, a selection or the visible
+  slice of a long line is exact arithmetic, never a measurement. The edits use
+  `font_t::system_monospace()` and take the advance from `font_t::metrics()`. A code point is one
+  cell, so wide CJK characters and combining marks are drawn one to a cell; tabs typed or pasted
+  become spaces to the next stop of four, so the rule holds.
+- **Clipping is a box flag.** `box_t::clip` brackets the box's children with two entries that draw
+  nothing. Flattening a chunk closes a run at each, runs carry a clip rectangle in window units
+  that nests by intersection, Vulkan sets a scissor per change and the GL stopgap cuts its clears.
+  Hit testing cuts each box to the clips around it, so a scrolled-out row cannot be pressed. A
+  clipping box stops growing to fit its children along whichever dimension its size or its parent
+  decides. The cut is rectangular, so rounded corners are not clipped exactly.
+- **Typed text and keys share one queue.** `ui::merge` takes turns between its subscriptions so a
+  busy one cannot starve a quiet one, and that reordered a key and the text typed after it: "x"
+  landed before the Enter pressed first. Rather than give up the fairness, a text input
+  (`pressable_t{ui::text_input}`) is sent `typing_event_t`, keys and text in arrival order. Space
+  is text to it, not a press.
+- **Drag and wheel events.** A pressable is also a source of `drag_event_t` (button down on it,
+  moves while held, release, with a click count for double and triple clicks) and of
+  `wheel_event_t`, which goes to the topmost pressable under the pointer that has a wheel
+  subscriber, so nested scrolling areas work.
+- **A view sizes itself from `pressable_t::bounds()`**, its box as drawn last frame. A change
+  rebuilds the owner, so a text edit learns how many lines and columns it shows one frame after a
+  resize. The trap, which the first scrollbar fell into: anything placed from the bounds must not
+  be able to grow the box they measure. A thumb at the right edge of the edit's padded box widened
+  it by 2 units, which moved the thumb, every frame, without end. It sits in the clipping box now.
+- **The line edit is controlled, the text edit is not.** A line is small and a parent that refuses
+  an edit -- digits only -- is the point of controlling it. A document copied down through props
+  and compared every frame costs as much as the document, so the text edit owns its lines and a
+  parent reads them and changes them with `set_text`, `append` and `append_line`. Those take a
+  scope because the edit's own behaviour did not wake: `ui::invalidate(scope, component)` rebuilds
+  any mounted component, found by the same key a mount uses. `follow` keeps a log at its end while
+  the user leaves it there, and `max_lines` drops the oldest lines.
+- **The clipboard is reachable from a window**, `window_t::set_clipboard_text` and
+  `clipboard_text()`, forwarding to its display: a widget has its window, not the display.
+
+Measured on Windows at 150%: typing, Shift and Ctrl selection, the clipboard, drag selection, the
+wheel and the scrollbar in `vui_ui_text`. Not yet: undo, input method composition (only committed
+text arrives), word wrap, a horizontal scrollbar, a blinking caret, scrolling while a drag rests
+outside the edit, and a proportional-font line edit.

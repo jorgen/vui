@@ -22,6 +22,8 @@ Copyright (c) 2026 Jørgen Lind
 
 #include "vui/ui/ui.h"
 
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -39,7 +41,8 @@ namespace detail
 
 // One laid-out piece of a component's own output: a primitive in the component's coordinates, or a
 // mounted child placed at an offset. `box` is set on the primitive that draws a box, which is what
-// hit testing reports; a shadow's primitive has none.
+// hit testing reports; a shadow's primitive has none. A clipping box brackets its children with two
+// markers that draw nothing: `clip` 1 opens a clip to the prim's rectangle, -1 closes it (G50).
 struct entry_t
 {
   prim_t prim;
@@ -48,7 +51,22 @@ struct entry_t
   float x = 0;
   float y = 0;
   int ordinal = 0;
+  std::int8_t clip = 0;
 };
+
+// A clip rectangle, left, top, right and bottom.
+using clip_rect_t = std::array<float, 4>;
+constexpr clip_rect_t no_clip{-run_t::clip_none, -run_t::clip_none, run_t::clip_none, run_t::clip_none};
+
+clip_rect_t intersect(const clip_rect_t &a, const clip_rect_t &b) noexcept
+{
+  return {std::max(a[0], b[0]), std::max(a[1], b[1]), std::min(a[2], b[2]), std::min(a[3], b[3])};
+}
+
+bool empty(const clip_rect_t &r) noexcept
+{
+  return r[2] <= r[0] || r[3] <= r[1];
+}
 
 // A chunk is the flattened output of a subtree too small to keep apart (G29): its own primitives
 // and its inlined descendants', in its own coordinates, cut into segments wherever a descendant
@@ -60,6 +78,8 @@ struct segment_t
   slot_t *child = nullptr;
   float x = 0;
   float y = 0;
+  // In the holder's coordinates.
+  clip_rect_t clip = no_clip;
 };
 
 struct chunk_t
@@ -449,6 +469,7 @@ public:
       }
       collect_items(*popup.slot, popup.x, popup.y, popup.s);
     }
+    update_bounds();
     _stats.display_list = clock::now() - emitting;
     _stats.prims = _prims.size();
     _stats.runs = _runs.size();
@@ -469,11 +490,45 @@ public:
 
   // ---- input. Pointer positions arrive in the window system's units (G9) and are kept in layout
   // units.
-  void pointer_moved(point_t position)
+  void pointer_moved(point_t position, modifier_t modifiers = modifier_t::none)
   {
     _pointer = to_logical(position);
     _has_pointer = true;
     hover(_pointer);
+    if (_held.source)
+      drag(_held.source, drag_phase_t::move, _pointer, modifiers, _clicks);
+  }
+
+  // The wheel goes to the topmost pressable under the pointer that has a wheel subscriber.
+  void wheel(const scroll_event_t &event)
+  {
+    const auto position = to_logical(event.position);
+    for (auto it = _items.rbegin(); it != _items.rend(); ++it)
+    {
+      const auto *source = it->box->events.source;
+      if (!source || !it->rect.contains(position))
+        continue;
+      auto &wheels = static_cast<detail::source_t<wheel_event_t> &>(*const_cast<pressable_t *>(source));
+      if (!wheels.subscribed())
+        continue;
+      wheels.emit(wheel_event_t{source, event.dx, event.dy, position, event.modifiers}, *this);
+      return;
+    }
+  }
+
+  // Typed text goes to the focused pressable if it is a text input, in one queue with its keys.
+  void text(const text_event_t &event)
+  {
+    if (_focused && !owner_of(_focused))
+      set_focus(nullptr, false);
+    if (_focused && _focused->text_input())
+      typing(typing_event_t{event});
+  }
+
+  void typing(const typing_event_t &event)
+  {
+    auto &typed = static_cast<detail::source_t<typing_event_t> &>(*const_cast<pressable_t *>(_focused));
+    typed.emit(event, *this);
   }
   void pointer_left()
   {
@@ -495,11 +550,25 @@ public:
         set_flag(_held.source, &pressable_t::_held, true);
       if (_held.source && _held.source->focusable())
         set_focus(_held.source, false);
+      if (_held.source)
+      {
+        // A press soon after the last, on the same pressable and close to it, counts on.
+        const auto now = std::chrono::steady_clock::now();
+        const bool again = _held.source == _click_source && now - _click_time < std::chrono::milliseconds(500) && std::abs(position.x - _click_at.x) <= 4 && std::abs(position.y - _click_at.y) <= 4;
+        _clicks = again ? _clicks % 3 + 1 : 1;
+        _click_source = _held.source;
+        _click_time = now;
+        _click_at = position;
+        drag(_held.source, drag_phase_t::begin, position, event.modifiers, _clicks);
+      }
       return;
     }
     auto held = std::exchange(_held, {});
     if (held.source)
+    {
       set_flag(held.source, &pressable_t::_held, false);
+      drag(held.source, drag_phase_t::end, position, event.modifiers, _clicks);
+    }
     if (held.empty() || !(target_at(position) == held))
       return;
     const auto *item = find(held);
@@ -529,13 +598,15 @@ public:
         set_flag(_focused, &pressable_t::_focus_visible, true);
       auto &keys = static_cast<detail::source_t<key_event_t> &>(*const_cast<pressable_t *>(_focused));
       keys.emit(event, *this);
+      if (_focused && _focused->text_input())
+        typing(typing_event_t{event});
     }
     if (event.pressed && event.key == vui::key_t::tab)
     {
       move_focus(has(event.modifiers, modifier_t::shift));
       return;
     }
-    if (!_focused || event.key != vui::key_t::space || event.repeat)
+    if (!_focused || _focused->text_input() || event.key != vui::key_t::space || event.repeat)
       return;
     if (event.pressed)
     {
@@ -582,6 +653,12 @@ public:
     }
     if (source)
       set_flag(source, &pressable_t::_focus_visible, visible);
+  }
+
+  void drag(const pressable_t *source, drag_phase_t phase, point_t position, modifier_t modifiers, int clicks)
+  {
+    auto &drags = static_cast<detail::source_t<drag_event_t> &>(*const_cast<pressable_t *>(source));
+    drags.emit(drag_event_t{source, phase, position, modifiers, clicks}, *this);
   }
 
   void press(const pressable_t *source, point_t position)
@@ -634,6 +711,12 @@ public:
   [[nodiscard]] drained_awaitable_t drained() noexcept
   {
     return {*this};
+  }
+
+  void invalidate_component(void *component, node_t (*view)(const void *)) noexcept
+  {
+    if (auto it = _slots.find(key_t{component, view}); it != _slots.end())
+      invalidate(*it->second);
   }
 
   void set_root(mount_t root) noexcept
@@ -977,9 +1060,12 @@ private:
         content.width = std::max(content.width, natural.width);
         content.height = std::max(content.height, natural.height);
       }
-      room = {std::max({box.size.width, content.width + pad.left + pad.right, want.width}) - pad.left - pad.right, std::max({box.size.height, content.height + pad.top + pad.bottom, want.height}) - pad.top - pad.bottom};
+      room = {fit(box, box.size.width, content.width + pad.left + pad.right, want.width) - pad.left - pad.right, fit(box, box.size.height, content.height + pad.top + pad.bottom, want.height) - pad.top - pad.bottom};
     }
     const extent_t child_want{stretch_x ? room.width : -1, stretch_y ? room.height : -1};
+    const std::size_t clip_index = slot.entries.size();
+    if (box.clip)
+      slot.entries.push_back(entry_t{.clip = 1});
 
     std::vector<placed_child_t> children;
     children.reserve(box.children.size());
@@ -990,7 +1076,7 @@ private:
       content.width = std::max(content.width, children.back().placed.size.width);
       content.height = std::max(content.height, children.back().placed.size.height);
     }
-    const extent_t size{std::max({box.size.width, content.width + pad.left + pad.right, want.width}), std::max({box.size.height, content.height + pad.top + pad.bottom, want.height})};
+    const extent_t size{fit(box, box.size.width, content.width + pad.left + pad.right, want.width), fit(box, box.size.height, content.height + pad.top + pad.bottom, want.height)};
     room = {size.width - pad.left - pad.right, size.height - pad.top - pad.bottom};
     float baseline = -1;
     for (const auto &child : children)
@@ -1002,6 +1088,15 @@ private:
         baseline = float(pad.top) + dy + child.placed.baseline;
     }
 
+    if (box.clip)
+    {
+      auto &open = slot.entries[clip_index].prim;
+      open.x = x + box.border_width;
+      open.y = y + box.border_width;
+      open.width = std::max(float(size.width) - 2 * box.border_width, 0.0f);
+      open.height = std::max(float(size.height) - 2 * box.border_width, 0.0f);
+      slot.entries.push_back(entry_t{.clip = -1});
+    }
     if (shadowed)
       slot.entries[index - 1].prim = shadow_prim(box, x, y, size);
     auto &entry = slot.entries[index];
@@ -1011,6 +1106,15 @@ private:
     entry.y = y;
     entry.ordinal = box_ordinal;
     return {size, baseline};
+  }
+
+  // A box's size along one dimension: at least its own and what it is given, and big enough for its
+  // content unless it clips and one of the other two decided.
+  static int fit(const box_t &box, int own, int content, int given) noexcept
+  {
+    if (box.clip && (own > 0 || given >= 0))
+      return std::max(own, given);
+    return std::max({own, content, given});
   }
 
   placed_t place_line(slot_t &slot, const std::vector<node_t> &nodes, bool horizontal, int gap, align_t align, const edges_t &pad, float x, float y, int &ordinal, extent_t want)
@@ -1264,17 +1368,27 @@ private:
     chunk.prims.clear();
     chunk.segments.clear();
     std::uint32_t begin = 0;
+    std::vector<clip_rect_t> clips{no_clip};
     auto close_run = [&]
     {
       const auto end = std::uint32_t(chunk.prims.size());
       if (end > begin)
-        chunk.segments.push_back(segment_t{begin, end});
+        chunk.segments.push_back(segment_t{begin, end, nullptr, 0, 0, clips.back()});
       begin = end;
     };
     auto walk = [&](auto &self, const slot_t &slot, float dx, float dy) -> void
     {
       for (const auto &entry : slot.entries)
       {
+        if (entry.clip != 0)
+        {
+          close_run();
+          if (entry.clip > 0)
+            clips.push_back(intersect(clips.back(), {entry.prim.x + dx, entry.prim.y + dy, entry.prim.x + dx + entry.prim.width, entry.prim.y + dy + entry.prim.height}));
+          else if (clips.size() > 1)
+            clips.pop_back();
+          continue;
+        }
         if (!entry.child)
         {
           prim_t prim = entry.prim;
@@ -1285,7 +1399,7 @@ private:
         if (decide_holder(*entry.child))
         {
           close_run();
-          chunk.segments.push_back(segment_t{0, 0, entry.child, dx + entry.x, dy + entry.y});
+          chunk.segments.push_back(segment_t{0, 0, entry.child, dx + entry.x, dy + entry.y, clips.back()});
           continue;
         }
         self(self, *entry.child, dx + entry.x, dy + entry.y);
@@ -1317,13 +1431,17 @@ private:
     }
   }
 
-  // `s` is the scale the holder is drawn at: its own times its ancestors'.
-  void emit(slot_t &holder, float x, float y, float s)
+  // `s` is the scale the holder is drawn at: its own times its ancestors'. `clip` is in the window's
+  // units, what the holder's ancestors cut it to.
+  void emit(slot_t &holder, float x, float y, float s, const clip_rect_t &clip = no_clip)
   {
     if (holder.subtree_dirty || !holder.chunk.valid)
       flatten(holder);
     for (const auto &segment : holder.chunk.segments)
     {
+      clip_rect_t cut = clip;
+      if (segment.clip != no_clip)
+        cut = intersect(clip, {x + segment.clip[0] * s, y + segment.clip[1] * s, x + segment.clip[2] * s, y + segment.clip[3] * s});
       if (segment.child)
       {
         const float cx = x + segment.x * s;
@@ -1335,45 +1453,90 @@ private:
           _popups.push_back(popup_t{segment.child, cx, cy, cs});
           continue;
         }
-        // A chunk wholly outside the window is not drawn (G45).
-        if (!visible(*segment.child, cx, cy, cs))
+        // A chunk wholly outside the window, or cut away entirely, is not drawn (G45).
+        if (empty(cut) || !visible(*segment.child, cx, cy, cs))
         {
           if (segment.child->subtree_dirty)
             forget_chunks(*segment.child);
           continue;
         }
-        emit(*segment.child, cx, cy, cs);
+        emit(*segment.child, cx, cy, cs, cut);
         continue;
       }
+      if (empty(cut))
+        continue;
       const auto first = std::uint32_t(_prims.size());
       _prims.insert(_prims.end(), holder.chunk.prims.begin() + segment.begin, holder.chunk.prims.begin() + segment.end);
-      _runs.push_back(run_t{first, segment.end - segment.begin, x, y, s});
+      run_t run{first, segment.end - segment.begin, x, y, s};
+      std::copy(cut.begin(), cut.end(), run.clip);
+      _runs.push_back(run);
     }
   }
 
-  // The hit-test list, from the entries as they stand: no view runs for it.
-  void collect_items(slot_t &slot, float x, float y, float s)
+  // The hit-test list, from the entries as they stand: no view runs for it. A box is cut to the clips
+  // around it, and one cut away entirely cannot be hit.
+  void collect_items(slot_t &slot, float x, float y, float s, clip_rect_t clip = no_clip)
   {
     // Only what a press can be aimed at, unless someone asked for every box.
     const bool every_box = bool(_config.on_layout);
     if (!every_box && slot.targets == 0)
       return;
+    std::vector<clip_rect_t> clips;
     for (const auto &entry : slot.entries)
     {
+      if (entry.clip > 0)
+      {
+        clips.push_back(clip);
+        clip = intersect(clip, {x + entry.prim.x * s, y + entry.prim.y * s, x + (entry.prim.x + entry.prim.width) * s, y + (entry.prim.y + entry.prim.height) * s});
+        continue;
+      }
+      if (entry.clip < 0)
+      {
+        if (!clips.empty())
+        {
+          clip = clips.back();
+          clips.pop_back();
+        }
+        continue;
+      }
       if (entry.child)
       {
         if (entry.child->popup)
           continue;
         const float cs = s * entry.child->scale;
-        if (visible(*entry.child, x + entry.x * s, y + entry.y * s, cs))
-          collect_items(*entry.child, x + entry.x * s, y + entry.y * s, cs);
+        if (!empty(clip) && visible(*entry.child, x + entry.x * s, y + entry.y * s, cs))
+          collect_items(*entry.child, x + entry.x * s, y + entry.y * s, cs, clip);
         continue;
       }
       if (!entry.box || (!every_box && !entry.box->events.source && !entry.box->on_press))
         continue;
       const auto &box = *entry.box;
-      const rect_t rect{int(std::lround(x + entry.x * s)), int(std::lround(y + entry.y * s)), int(std::lround(entry.prim.width * s)), int(std::lround(entry.prim.height * s))};
+      const clip_rect_t edges = intersect(clip, {x + entry.x * s, y + entry.y * s, x + (entry.x + entry.prim.width) * s, y + (entry.y + entry.prim.height) * s});
+      if (empty(edges))
+        continue;
+      const int left = int(std::lround(edges[0]));
+      const int top = int(std::lround(edges[1]));
+      const rect_t rect{left, top, int(std::lround(edges[2])) - left, int(std::lround(edges[3])) - top};
       _items.push_back(draw_item_t{rect, box.color, &box, &slot, entry.ordinal});
+    }
+  }
+
+  // Each pressable's box as drawn this frame; the first box showing it wins. A change rebuilds the
+  // component that shows it, which is how a view learns its own size (G50).
+  void update_bounds()
+  {
+    ++_bounds_frame;
+    for (const auto &item : _items)
+    {
+      auto *source = const_cast<pressable_t *>(item.box->events.source);
+      if (!source || source->_bounds_frame == _bounds_frame)
+        continue;
+      source->_bounds_frame = _bounds_frame;
+      if (source->_bounds != item.rect)
+      {
+        source->_bounds = item.rect;
+        invalidate(*item.slot);
+      }
     }
   }
 
@@ -1539,6 +1702,11 @@ private:
   const pressable_t *_hovered = nullptr;
   target_t _held;
   const pressable_t *_focused = nullptr;
+  const pressable_t *_click_source = nullptr;
+  std::chrono::steady_clock::time_point _click_time;
+  point_t _click_at;
+  int _clicks = 1;
+  std::uint64_t _bounds_frame = 0;
 
   // This frame's popups, where they are drawn, in drawing order. `backdrop` is the box a dismissing
   // popup's whole-window hit-test entry points at.
@@ -1606,10 +1774,12 @@ public:
         const auto &prim = list.prims[i];
         if (prim.blur > 0 || prim.kind != prim_kind_t::shape)
           continue;
-        const int x0 = int((run.x + prim.x * run.scale) * sx + 0.5);
-        const int x1 = int((run.x + (prim.x + prim.width) * run.scale) * sx + 0.5);
-        const int y0 = int((run.y + prim.y * run.scale) * sy + 0.5);
-        const int y1 = int((run.y + (prim.y + prim.height) * run.scale) * sy + 0.5);
+        const int x0 = int((std::max(run.x + prim.x * run.scale, run.clip[0])) * sx + 0.5);
+        const int x1 = int((std::min(run.x + (prim.x + prim.width) * run.scale, run.clip[2])) * sx + 0.5);
+        const int y0 = int((std::max(run.y + prim.y * run.scale, run.clip[1])) * sy + 0.5);
+        const int y1 = int((std::min(run.y + (prim.y + prim.height) * run.scale, run.clip[3])) * sy + 0.5);
+        if (x1 <= x0 || y1 <= y0)
+          continue;
         _scissor(x0, height - y1, x1 - x0, y1 - y0);
         _clear_color(prim.fill.r, prim.fill.g, prim.fill.b, prim.fill.a);
         _clear(gl_color_buffer_bit);
@@ -1697,11 +1867,13 @@ std::unique_ptr<renderer_t> choose_renderer(window_t &window, const run_config_t
 
 vio::task_t<void> pointer_loop(window_t &window, runtime_t &runtime)
 {
-  auto events = window.subscribe<pointer_move_event_t, pointer_button_event_t, pointer_enter_event_t>();
+  auto events = window.subscribe<pointer_move_event_t, pointer_button_event_t, pointer_enter_event_t, scroll_event_t>();
   while (auto event = co_await events)
   {
     if (auto *move = std::get_if<pointer_move_event_t>(&*event))
-      runtime.pointer_moved(move->position);
+      runtime.pointer_moved(move->position, move->modifiers);
+    else if (auto *scroll = std::get_if<scroll_event_t>(&*event))
+      runtime.wheel(*scroll);
     else if (auto *button = std::get_if<pointer_button_event_t>(&*event))
       runtime.button(*button);
     else if (auto *enter = std::get_if<pointer_enter_event_t>(&*event); enter && !enter->entered)
@@ -1711,9 +1883,14 @@ vio::task_t<void> pointer_loop(window_t &window, runtime_t &runtime)
 
 vio::task_t<void> key_loop(window_t &window, runtime_t &runtime)
 {
-  auto events = window.subscribe<key_event_t>();
+  auto events = window.subscribe<key_event_t, text_event_t>();
   while (auto event = co_await events)
-    runtime.key(*event);
+  {
+    if (auto *key = std::get_if<key_event_t>(&*event))
+      runtime.key(*key);
+    else
+      runtime.text(std::get<text_event_t>(*event));
+  }
 }
 
 // A resize or an expose needs a new frame although no view changed; an expose redraws the display
@@ -1761,6 +1938,11 @@ vio::task_t<void> run_root(window_t &window, mount_t root, run_config_t config)
 void ready(runtime_t &runtime, waiter_t &waiter) noexcept
 {
   runtime.ready(waiter);
+}
+
+void invalidate_component(runtime_t &runtime, void *component, node_t (*view)(const void *)) noexcept
+{
+  runtime.invalidate_component(component, view);
 }
 
 bool scope_cancelled(const scope_t &scope) noexcept

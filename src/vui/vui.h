@@ -53,7 +53,7 @@ public:
 
   [[nodiscard]] bool await_ready() const noexcept
   {
-    return false;
+    return !_display;
   }
   void await_suspend(std::coroutine_handle<> continuation)
   {
@@ -62,6 +62,8 @@ public:
   }
   std::expected<std::string, vio::error_t> await_resume()
   {
+    if (!_display)
+      return std::unexpected(vio::make_error(vio::errc::canceled));
     if (error)
       return std::unexpected(vio::make_error(error));
     return std::move(*value);
@@ -248,6 +250,18 @@ public:
   [[nodiscard]] native_window_t native() const
   {
     return _impl && _impl->backend ? _impl->backend->native() : native_window_t{};
+  }
+
+  // The clipboard of the display the window is on, for code that has the window and not the
+  // display: a widget (G50). A closed window sets nothing and reads an error.
+  void set_clipboard_text(std::string text)
+  {
+    if (_impl)
+      _impl->display.backend->set_clipboard_text(std::move(text));
+  }
+  [[nodiscard]] clipboard_awaitable_t clipboard_text() noexcept
+  {
+    return clipboard_awaitable_t(_impl ? &_impl->display : nullptr);
   }
 
   [[nodiscard]] detail::window_impl_t *impl() const noexcept

@@ -832,8 +832,22 @@ public:
       push.encode_srgb = encode_srgb ? 1.0f : 0.0f;
       const auto stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
       _d.vkCmdPushConstants(cmd, _layout, stages, 0, sizeof(push), &push);
+      VkRect2D current = scissor;
       for (const auto &run : list.runs)
       {
+        // A clipping box's cut, in pixels and inside the framebuffer (G50).
+        const float x0 = std::clamp(std::floor(run.clip[0] * push.scale[0]), 0.0f, float(extent.width));
+        const float y0 = std::clamp(std::floor(run.clip[1] * push.scale[1]), 0.0f, float(extent.height));
+        const float x1 = std::clamp(std::ceil(run.clip[2] * push.scale[0]), 0.0f, float(extent.width));
+        const float y1 = std::clamp(std::ceil(run.clip[3] * push.scale[1]), 0.0f, float(extent.height));
+        if (x1 <= x0 || y1 <= y0)
+          continue;
+        const VkRect2D cut{{std::int32_t(x0), std::int32_t(y0)}, {std::uint32_t(x1 - x0), std::uint32_t(y1 - y0)}};
+        if (cut.offset.x != current.offset.x || cut.offset.y != current.offset.y || cut.extent.width != current.extent.width || cut.extent.height != current.extent.height)
+        {
+          _d.vkCmdSetScissor(cmd, 0, 1, &cut);
+          current = cut;
+        }
         push.origin[0] = run.x;
         push.origin[1] = run.y;
         push.zoom = run.scale;

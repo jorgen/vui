@@ -36,6 +36,9 @@ no second loop to hand work across and nothing to lock.
   &nbsp;
   <img alt="vui_ui_widgets: checkboxes, dropdowns and buttons" src="docs/widgets.png" width="37%">
 </p>
+<p align="center">
+  <img alt="vui_ui_text: line edits, a notes pane and a scrolling log" src="docs/text.png" width="70%">
+</p>
 
 ## What's inside
 
@@ -64,8 +67,9 @@ no second loop to hand work across and nothing to lock.
 - Rendering uses **Vulkan**, with GL as the fallback. It works from a display list with dirty
   propagation and cached layout, so unchanged parts are not drawn again. The shaders are written
   in Slang, and the SPIR-V is committed.
-- Rows, columns and flex layout, popups, focus and keyboard navigation, icons from paths, plus a
-  set of widgets.
+- Rows, columns and flex layout, clipping, popups, focus and keyboard navigation, icons from
+  paths, plus a set of widgets: buttons, checkboxes, comboboxes, labels, line edits, and a
+  fixed-width text edit that serves as an input pane or as a scrolling log.
 
 ## A taste
 
@@ -172,6 +176,7 @@ cmake -B build -DCMDEP_SOURCE_DIR_VIO=/path/to/vio
 | `vui_ui_feed` | a UI fed from a socket |
 | `vui_ui_chips` | 200,000 chips, the stress test |
 | `vui_ui_widgets` | the widget set |
+| `vui_ui_text` | labels, line edits, a notes pane and a log fed by a timer |
 | `vui_vulkan_clear`, `vui_d3d12_clear`, `vui_metal_clear` | bring your own renderer |
 
 Every example takes an optional frame or time limit, and CI uses it to run them unattended.

@@ -55,6 +55,11 @@ On Windows, run `vcvars64.bat` before configuring.
   exposes what vui needs: `fd_watch.h` for the display connection, `host_loop.h`, `loop_hooks.h`
   and `handle_wait.h`. If vui needs more, add it to vio properly rather than reaching in.
 - vui code lives in `namespace vui`, so vio names are always written `vio::`.
+- Text widgets (G50) are fixed-width: `text_t::advance` puts text on a grid, so caret and selection
+  are column arithmetic. A text input reads `typing_event_t`, never a merge of keys and text,
+  which reorders them. A view that sizes itself from `pressable_t::bounds()` must not place
+  anything that can grow the box being measured, or it grows every frame; put it in a
+  `box_t{.clip = true}`, which does not grow to fit its children.
 - No graphics library is linked. GL, EGL and Vulkan are loaded at run time (G6, G31). The UI
   renderer prefers Vulkan and falls back to GL (G32). Its SPIR-V is committed in
   `src/shaders/ui_spirv.h`, and only the `vui_shaders` target (slangc) regenerates it.

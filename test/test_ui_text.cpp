@@ -378,6 +378,29 @@ TEST_CASE("ui text: a full atlas is emptied and says so once")
   CHECK(engine.atlas().generation != generation);
 }
 
+TEST_CASE("ui text: on a grid every code point is one advance, whatever the font says")
+{
+  ui::detail::text_engine_t engine;
+  const auto font = roboto();
+  const auto metrics = font.metrics(20);
+  CHECK(metrics.advance > 5);
+  CHECK(metrics.ascent > 10);
+  CHECK(metrics.descent > 2);
+
+  std::vector<ui::prim_t> prims;
+  // "i" is narrow in Roboto; on a grid of 10 it still steps by 10, and "\u00e9" is one cell.
+  const auto laid = engine.add_text({.text = "ii\u00e9i", .size = 20, .font = font, .advance = 10}, {}, 0, 0, prims);
+  CHECK(laid.size.width == 40);
+  REQUIRE(prims.size() == 4);
+  CHECK(prims[1].radii[2] - prims[0].radii[2] == doctest::Approx(10));
+  CHECK(prims[3].radii[2] - prims[1].radii[2] == doctest::Approx(20));
+
+  // Without a grid the same text is narrower: the font's own advances.
+  prims.clear();
+  const auto natural = engine.add_text({.text = "ii\u00e9i", .size = 20, .font = font}, {}, 0, 0, prims);
+  CHECK(natural.size.width < 40);
+}
+
 TEST_CASE("vulkan: text and an icon reach the screen")
 {
   snapshot_t one;

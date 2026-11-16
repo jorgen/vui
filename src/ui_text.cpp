@@ -113,6 +113,50 @@ std::expected<font_t, std::string> font_t::system_default()
   return std::unexpected(std::string("no system UI font at any known path"));
 }
 
+std::expected<font_t, std::string> font_t::system_monospace()
+{
+  std::vector<std::string> candidates;
+#if defined(_WIN32)
+  const char *windir = std::getenv("WINDIR");
+  const std::string fonts = std::string(windir ? windir : "C:\\Windows") + "\\Fonts\\";
+  candidates = {fonts + "consola.ttf", fonts + "CascadiaMono.ttf", fonts + "lucon.ttf", fonts + "cour.ttf"};
+#elif defined(__APPLE__)
+  candidates = {"/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf", "/System/Library/Fonts/SFNSMono.ttf", "/System/Library/Fonts/Courier.ttc"};
+#else
+  for (const char *dir : {"/usr/share/fonts/truetype/", "/usr/share/fonts/TTF/", "/usr/share/fonts/", "/usr/local/share/fonts/"})
+  {
+    for (const char *name : {"dejavu/DejaVuSansMono.ttf", "DejaVuSansMono.ttf", "noto/NotoSansMono-Regular.ttf", "NotoSansMono-Regular.ttf", "google-noto/NotoSansMono-Regular.ttf",
+                             "liberation/LiberationMono-Regular.ttf", "LiberationMono-Regular.ttf", "liberation-mono/LiberationMono-Regular.ttf"})
+      candidates.push_back(std::string(dir) + name);
+  }
+#endif
+  for (const auto &path : candidates)
+  {
+    if (auto font = from_file(path))
+      return font;
+  }
+  return std::unexpected(std::string("no fixed-width system font at any known path"));
+}
+
+font_t::metrics_t font_t::metrics(float size) const
+{
+  if (!_data || size <= 0)
+    return {};
+  auto *hb = hb_font_create(_data->face);
+  const float per_unit = size / float(std::max(hb_face_get_upem(_data->face), 1u));
+  hb_font_extents_t extents{};
+  hb_font_get_h_extents(hb, &extents);
+  metrics_t m;
+  hb_codepoint_t zero = 0;
+  if (hb_font_get_nominal_glyph(hb, '0', &zero))
+    m.advance = float(hb_font_get_glyph_h_advance(hb, zero)) * per_unit;
+  m.ascent = float(extents.ascender) * per_unit;
+  m.descent = float(-extents.descender) * per_unit;
+  m.line_gap = float(extents.line_gap) * per_unit;
+  hb_font_destroy(hb);
+  return m;
+}
+
 // ---- path_t
 
 path_t &path_t::move_to(float x, float y)
@@ -534,16 +578,37 @@ text_engine_t::laid_out_t text_engine_t::add_text(const text_t &text, const font
   hb_buffer_reset(impl.buffer);
   hb_buffer_add_utf8(impl.buffer, text.text.data(), int(text.text.size()), 0, int(text.text.size()));
   hb_buffer_guess_segment_properties(impl.buffer);
-  hb_shape(hb, impl.buffer, nullptr, 0);
+  // On a grid each code point is a cell of its own, so nothing may join two of them.
+  const bool grid = text.advance > 0;
+  static const hb_feature_t no_ligatures[] = {{HB_TAG('l', 'i', 'g', 'a'), 0, 0, ~0u}, {HB_TAG('c', 'l', 'i', 'g'), 0, 0, ~0u}, {HB_TAG('c', 'a', 'l', 't'), 0, 0, ~0u}};
+  hb_shape(hb, impl.buffer, grid ? no_ligatures : nullptr, grid ? 3 : 0);
   unsigned count = 0;
   const auto *infos = hb_buffer_get_glyph_infos(impl.buffer, &count);
   const auto *positions = hb_buffer_get_glyph_positions(impl.buffer, &count);
+
+  // The cell each byte's code point starts, for a grid: HarfBuzz reports clusters as byte offsets.
+  std::vector<std::uint32_t> cells;
+  std::uint32_t columns = 0;
+  if (grid)
+  {
+    cells.resize(text.text.size() + 1);
+    for (std::size_t b = 0; b < text.text.size(); ++b)
+    {
+      if ((static_cast<unsigned char>(text.text[b]) & 0xc0) != 0x80 && b > 0)
+        ++columns;
+      cells[b] = columns;
+    }
+    columns = text.text.empty() ? 0 : columns + 1;
+  }
+  const double cell64 = double(text.advance) * scale * 64.0;
 
   // Glyphs come back in visual order, left to right, whatever the direction.
   const std::size_t first = out.size();
   std::int64_t pen = 0;
   for (unsigned i = 0; i < count; ++i)
   {
+    if (grid)
+      pen = std::int64_t(std::llround(cells[std::min<std::size_t>(infos[i].cluster, text.text.size())] * cell64));
     const std::int64_t at = pen + positions[i].x_offset;
     const std::int64_t whole = at >= 0 ? at / 64 : -((-at + 63) / 64);
     const auto bin = std::uint32_t(((at - whole * 64) * subpixel_bins) / 64);
@@ -586,8 +651,10 @@ text_engine_t::laid_out_t text_engine_t::add_text(const text_t &text, const font
     }
     return {{int(std::ceil((right - left) / scale - 1e-3f)), int(std::ceil((bottom - top) / scale - 1e-3f))}, (float(baseline) - top) / scale};
   }
-  const int width_px = int(ceil_div(int(std::max<std::int64_t>(pen, 0)), 64));
   const int height_px = baseline + below;
+  if (grid)
+    return {{int(std::ceil(float(columns) * text.advance - 1e-3f)), int(std::ceil(height_px / scale - 1e-3f))}, float(baseline) / scale};
+  const int width_px = int(ceil_div(int(std::max<std::int64_t>(pen, 0)), 64));
   return {{int(std::ceil(width_px / scale - 1e-3f)), int(std::ceil(height_px / scale - 1e-3f))}, float(baseline) / scale};
 }
 

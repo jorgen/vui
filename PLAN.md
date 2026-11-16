@@ -249,6 +249,14 @@ press or by Tab, is sent every key as a source of `key_event_t`, and is pressed 
 over everything, is kept inside the window, and sends a press anywhere outside it to `dismiss`.
 `examples/ui_widgets.cpp` is a settings form using all three.
 
+Text came next (G50): `ui::label`, `line_edit_t` and `text_edit_t`, the last two in the
+fixed-width font so that a column is an advance and caret, selection and slicing are arithmetic.
+The line edit is controlled like the rest. The text edit holds its own lines, because a document
+copied through props costs as much as the document, and a parent changes it through methods that
+take a scope. What the runtime gained for them: `box_t::clip`, a grid mode on `text_t`, drag,
+wheel and ordered `typing_event_t` input on pressables, `pressable_t::bounds()`, and
+`ui::invalidate(scope, component)`. `examples/ui_text.cpp` shows them together.
+
 ### Two trees
 
 - The **component tree** is retained. `ui::run` owns the root, children are members of their
