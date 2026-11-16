@@ -203,6 +203,45 @@ int natural_folded(const std::string &a, const std::string &b) noexcept
   return 0;
 }
 
+// A path as it is best pasted: with forward slashes, which Windows accepts everywhere and which a
+// shell, a CMake file or a URL wants. The backslashed form is the one asked for by name.
+std::string portable(std::string path)
+{
+#if defined(_WIN32)
+  std::replace(path.begin(), path.end(), '\\', '/');
+#endif
+  return path;
+}
+
+// What someone typed or pasted into the path bar, as a path to go to: quotes and spaces around it
+// dropped, ~ for home, and on Windows either slash, with a bare drive meaning its root.
+std::string typed_path(std::string text)
+{
+  const auto trim = [](std::string &s)
+  {
+    while (!s.empty() && (s.back() == ' ' || s.back() == '"' || s.back() == '\'' || s.back() == '\t'))
+      s.pop_back();
+    std::size_t i = 0;
+    while (i < s.size() && (s[i] == ' ' || s[i] == '"' || s[i] == '\'' || s[i] == '\t'))
+      ++i;
+    s.erase(0, i);
+  };
+  trim(text);
+  if (text == "~" || text.rfind("~/", 0) == 0 || text.rfind("~\\", 0) == 0)
+    text = shell::home() + text.substr(1);
+#if defined(_WIN32)
+  std::replace(text.begin(), text.end(), '/', '\\');
+  if (text.size() == 2 && text[1] == ':')
+    text += '\\';
+  while (text.size() > 3 && text.back() == '\\')
+    text.pop_back();
+#else
+  while (text.size() > 1 && text.back() == '/')
+    text.pop_back();
+#endif
+  return text;
+}
+
 // ---- icons, as paths in the unit square
 
 std::shared_ptr<const ui::path_t> make_path(const std::function<void(ui::path_t &)> &draw)
@@ -525,7 +564,7 @@ public:
                                                               .children = {std::move(cells)}}}});
     }
     if (o.empty())
-      body.children.push_back(ui::at_t{.x = 16, .y = 14, .children = {muted(_entries.empty() ? "This folder is empty." : "Nothing here matches the filter.", 13)}});
+      body.children.push_back(ui::at_t{.x = 16, .y = 14, .children = {muted(_entries.empty() ? "This folder is empty." : (props.filter.empty() ? "Only hidden items here: tick Hidden to see them." : "Nothing here matches the filter."), 13)}});
     const float content = float(o.size()) * row_height;
     if (content > height && bounds.height > 0)
     {
@@ -968,6 +1007,8 @@ enum class action_t
   open,
   open_with,
   copy_path,
+  copy_path_native,
+  edit_path,
   reveal,
   terminal,
   properties,
@@ -1018,6 +1059,19 @@ struct explorer_t
   // The preview of the selection.
   std::uint64_t preview_generation = 0;
   std::string preview_note;
+  // The selection's thumbnail, when the system has one (G57), and the last few kept by path and
+  // modification time, so going back to a file shows it at once.
+  std::shared_ptr<const ui::image_data_t> preview_image;
+  std::unordered_map<std::string, std::shared_ptr<const ui::image_data_t>> thumbnails;
+  std::deque<std::string> thumbnail_order;
+
+  // The path bar while it is a field: what is typed in it, and whether it has had focus yet -- losing
+  // focus after that puts the breadcrumbs back. Mutable because the view is where focus is seen.
+  mutable bool editing_path = false;
+  mutable bool path_had_focus = false;
+  std::string typing;
+  // The menu is for the path bar rather than a row or the empty list.
+  bool menu_for_path = false;
 
   // What is waiting for "are you sure" before it goes to the Recycle Bin, or for good.
   std::optional<shell::entry_t> confirming;
@@ -1041,6 +1095,8 @@ struct explorer_t
   ui::text_edit_t preview;
   ui::context_menu_t menu;
   confirm_t confirm;
+  ui::pressable_t path_bar;
+  ui::line_edit_t path_edit;
 
   pipe_t *pipe = nullptr;
   worker_t *lister = nullptr;
@@ -1078,6 +1134,7 @@ struct explorer_t
       forward_stack.clear();
     }
     path = std::move(folder);
+    editing_path = false;
     ++navigations;
     menu_at.reset();
     asked_at = clock_t_::now();
@@ -1148,6 +1205,36 @@ struct explorer_t
       });
   }
 
+  // The path bar becomes a field holding the path, all of it selected and focused, so typing or
+  // pasting replaces it.
+  void edit_path(ui::scope_t &scope)
+  {
+    menu_at.reset();
+    editing_path = true;
+    path_had_focus = false;
+    typing = path;
+    path_edit.select_all();
+    ui::request_focus(scope, path_edit.field());
+  }
+
+  // Enter in the path bar: a folder is opened, a file opens its folder with it selected.
+  void go_to_typed(ui::scope_t &scope)
+  {
+    editing_path = false;
+    const auto target = typed_path(typing);
+    if (target.empty())
+      return;
+    std::error_code error;
+    const auto native = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(target.data()), target.size()));
+    if (std::filesystem::is_regular_file(native, error))
+    {
+      const auto folder = shell::parent(target);
+      go(scope, folder, true, target.substr(std::min(target.size(), target.find_last_of("\\/") + 1)));
+      return;
+    }
+    go(scope, target);
+  }
+
   void up(ui::scope_t &scope)
   {
     const auto above = shell::parent(path);
@@ -1205,6 +1292,7 @@ struct explorer_t
   {
     const auto mine = ++preview_generation;
     preview_note.clear();
+    preview_image.reset();
     if (index < 0)
     {
       preview.clear(scope);
@@ -1219,6 +1307,38 @@ struct explorer_t
     want_handlers(shell::join(path, e.name));
     auto *p = pipe;
     const auto file = shell::join(path, e.name);
+    // The picture, from the cache or the system's thumbnailer; it wins over the text when there is one.
+    const auto key = file + "|" + std::to_string(e.modified);
+    if (auto cached = thumbnails.find(key); cached != thumbnails.end())
+      preview_image = cached->second;
+    else
+    {
+      helper->post(
+        [this, p, file, key, mine]
+        {
+          auto picture = shell::thumbnail(file, 512);
+          if (!picture)
+            return;
+          auto data = std::make_shared<ui::image_data_t>();
+          data->width = picture->width;
+          data->height = picture->height;
+          data->rgba = std::move(picture->rgba);
+          p->post_event(
+            [this, key, mine, data = std::shared_ptr<const ui::image_data_t>(std::move(data))](ui::scope_t &scope)
+            {
+              thumbnail_order.push_back(key);
+              thumbnails[key] = data;
+              while (thumbnail_order.size() > 64)
+              {
+                thumbnails.erase(thumbnail_order.front());
+                thumbnail_order.pop_front();
+              }
+              if (preview_generation == mine)
+                preview_image = data;
+              scope.invalidate();
+            });
+        });
+    }
     helper->post(
       [this, p, file, mine]
       {
@@ -1329,8 +1449,9 @@ struct explorer_t
 
   // ---- the context menu
 
-  void open_menu(ui::scope_t &scope, std::optional<shell::entry_t> entry, vui::point_t at)
+  void open_menu(ui::scope_t &scope, std::optional<shell::entry_t> entry, vui::point_t at, bool for_path = false)
   {
+    menu_for_path = for_path;
     menu_entry = std::move(entry);
     if (menu_entry && !menu_entry->directory)
       want_handlers(shell::join(path, menu_entry->name));
@@ -1382,6 +1503,9 @@ struct explorer_t
       }
       rule();
       add({.label = "Copy path", .detail = "Ctrl+Shift+C"}, action_t::copy_path);
+#if defined(_WIN32)
+      add({.label = "Copy path with backslashes"}, action_t::copy_path_native);
+#endif
       add({.label = std::string("Show in ") + shell::file_manager_name()}, action_t::reveal);
       add({.label = "Open terminal here"}, action_t::terminal);
       rule();
@@ -1390,11 +1514,27 @@ struct explorer_t
       if (shell::has_properties())
         add({.label = "Properties", .detail = "Alt+Enter"}, action_t::properties);
     }
+    else if (menu_for_path)
+    {
+      add({.label = "Copy path", .detail = "Ctrl+Shift+C"}, action_t::copy_path);
+#if defined(_WIN32)
+      add({.label = "Copy path with backslashes"}, action_t::copy_path_native);
+#endif
+      add({.label = "Edit path", .detail = "double-click"}, action_t::edit_path);
+      rule();
+      add({.label = "Open terminal here"}, action_t::terminal);
+      add({.label = std::string("Show in ") + shell::file_manager_name()}, action_t::reveal);
+      if (shell::has_properties())
+        add({.label = "Properties"}, action_t::properties);
+    }
     else
     {
       add({.label = "Refresh", .detail = "F5"}, action_t::refresh);
       rule();
       add({.label = "Copy path"}, action_t::copy_path);
+#if defined(_WIN32)
+      add({.label = "Copy path with backslashes"}, action_t::copy_path_native);
+#endif
       add({.label = std::string("Show in ") + shell::file_manager_name()}, action_t::reveal);
       add({.label = "Open terminal here"}, action_t::terminal);
       if (shell::has_properties())
@@ -1432,8 +1572,15 @@ struct explorer_t
       break;
     }
     case action_t::copy_path:
+      scope.window().set_clipboard_text(portable(target));
+      say("Copied " + portable(target));
+      break;
+    case action_t::copy_path_native:
       scope.window().set_clipboard_text(target);
       say("Copied " + target);
+      break;
+    case action_t::edit_path:
+      edit_path(scope);
       break;
     case action_t::reveal:
       launch([target] { return shell::reveal(target); }, std::string("Shown in ") + shell::file_manager_name());
@@ -1470,6 +1617,35 @@ struct explorer_t
                      .children = {ui::icon_t{.path = icon, .size = 18, .color = enabled ? t.text : t.text_disabled}}};
   }
 
+  // The breadcrumbs, or while editing a field with the path in it. Losing focus once it has had it
+  // ends the editing, as a click elsewhere should.
+  ui::node_t path_area(ui::row_t trail) const
+  {
+    if (editing_path)
+    {
+      if (path_edit.field().focused())
+        path_had_focus = true;
+      else if (path_had_focus)
+        editing_path = false;
+    }
+    if (editing_path)
+      return ui::box_t{.size = {200, 36},
+                       .color = clear,
+                       .grow = 1,
+                       .align_x = ui::align_t::stretch,
+                       .align_y = ui::align_t::stretch,
+                       .children = {ui::mount(path_edit, {.text = typing, .placeholder = "Type or paste a path, then Enter", .columns = 20})}};
+    return ui::box_t{.size = {200, 36},
+                     .color = well,
+                     .radius = 8,
+                     .events = path_bar,
+                     .grow = 1,
+                     .padding = {6, 0},
+                     .align_x = ui::align_t::start,
+                     .clip = true,
+                     .children = {std::move(trail)}};
+  }
+
   ui::node_t toolbar() const
   {
     const auto &t = ui::theme();
@@ -1494,7 +1670,7 @@ struct explorer_t
                      .children = {icon_button(back_button, icons().back, !back_stack.empty()), icon_button(forward_button, icons().forward, !forward_stack.empty()),
                                   icon_button(up_button, icons().up, shell::parent(path) != path), icon_button(home_button, icons().home, true), icon_button(refresh_button, icons().refresh, true),
                                   ui::box_t{.size = {8, 0}, .color = clear},
-                                  ui::box_t{.size = {200, 36}, .color = well, .radius = 8, .grow = 1, .padding = {6, 0}, .align_x = ui::align_t::start, .clip = true, .children = {std::move(trail)}},
+                                  path_area(std::move(trail)),
                                   ui::box_t{.size = {8, 0}, .color = clear}, ui::mount(filter_edit, {.text = filter, .placeholder = "Filter this folder", .columns = 18}),
                                   ui::mount(hidden_box, {.label = "Hidden", .checked = show_hidden})}};
   }
@@ -1568,8 +1744,20 @@ struct explorer_t
     ui::column_t whole{.gap = 10, .align = ui::align_t::stretch, .children = {ui::box_t{.color = panel, .radius = 10, .padding = 14, .align_x = ui::align_t::stretch, .children = {std::move(col)}}}};
     if (!e->directory)
     {
-      ui::column_t p{.gap = 6, .align = ui::align_t::stretch, .children = {ui::row_t{.children = {muted("Preview"), ui::spacer_t{}, muted(preview_note, 11)}}}};
-      p.children.push_back(ui::box_t{.color = clear, .grow = 1, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {ui::mount(preview, {.read_only = true, .columns = 30, .rows = 8})}});
+      ui::column_t p{.gap = 6, .align = ui::align_t::stretch, .children = {ui::row_t{.children = {muted("Preview"), ui::spacer_t{}, muted(preview_image ? std::string() : preview_note, 11)}}}};
+      if (preview_image && preview_image->width > 0 && preview_image->height > 0)
+      {
+        // Fitted to the pane, its shape kept, never enlarged past twice its pixels.
+        constexpr float room_w = 246, room_h = 360;
+        const float w = float(preview_image->width), h = float(preview_image->height);
+        const float fit = std::min({room_w / w, room_h / h, 2.0f});
+        p.children.push_back(ui::box_t{.color = clear,
+                                       .align_x = ui::align_t::center,
+                                       .children = {ui::image_t{.size = {int(w * fit), int(h * fit)}, .data = preview_image, .radius = 6}}});
+        p.children.push_back(muted(grouped(std::uint64_t(preview_image->width)) + " x " + grouped(std::uint64_t(preview_image->height)) + " thumbnail", 11));
+      }
+      else
+        p.children.push_back(ui::box_t{.color = clear, .grow = 1, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {ui::mount(preview, {.read_only = true, .columns = 30, .rows = 8})}});
       whole.children.push_back(ui::box_t{.color = panel, .radius = 10, .grow = 1, .padding = 12, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {std::move(p)}});
     }
     return ui::box_t{.size = {270, 0}, .color = clear, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {std::move(whole)}};
@@ -1642,7 +1830,15 @@ struct explorer_t
     table.types = &types;
     table.want_type = [this](const std::string &ext) { want_type(ext); };
 
-    go(scope, start_at.empty() ? shell::home() : start_at, false);
+    // A file to start at opens its folder with it selected, as the path bar does.
+    {
+      std::error_code error;
+      const auto start = typed_path(start_at);
+      if (!start.empty() && std::filesystem::is_regular_file(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(start.data()), start.size())), error))
+        go(scope, shell::parent(start), false, start.substr(std::min(start.size(), start.find_last_of("\\/") + 1)));
+      else
+        go(scope, start.empty() ? shell::home() : start, false);
+    }
 
     auto presses = ui::subscribe<ui::press_event_t>(back_button, forward_button, up_button, home_button, refresh_button);
     auto crumbs = ui::subscribe<ui::press_event_t>(crumb_buttons);
@@ -1657,7 +1853,13 @@ struct explorer_t
     auto keys = ui::subscribe<vui::key_event_t>(table.body());
     auto answers = ui::subscribe<bool>(confirm.answered);
     auto declined = ui::subscribe<ui::press_event_t>(confirm.dismiss);
-    auto events = ui::merge(scope, presses, crumbs, places_pressed, filters, toggles, selections, activations, contexts, choices, dismissals, keys, answers, declined);
+    auto bar_drags = ui::subscribe<ui::drag_event_t>(path_bar);
+    auto bar_menus = ui::subscribe<ui::context_event_t>(path_bar);
+    auto typed = ui::subscribe<ui::line_edit_event_t>(path_edit.changed);
+    auto entered = ui::subscribe<ui::line_edit_event_t>(path_edit.submitted);
+    auto path_keys = ui::subscribe<vui::key_event_t>(path_edit.field());
+    auto events = ui::merge(scope, presses, crumbs, places_pressed, filters, toggles, selections, activations, contexts, choices, dismissals, keys, answers, declined, bar_drags, bar_menus, typed,
+                            entered, path_keys);
     while (auto event = co_await events)
     {
       switch (event->index())
@@ -1730,6 +1932,23 @@ struct explorer_t
       case 9:
         menu_at.reset();
         break;
+      case 13:
+        if (std::get<13>(*event).phase == ui::drag_phase_t::begin && std::get<13>(*event).clicks == 2)
+          edit_path(scope);
+        break;
+      case 14:
+        open_menu(scope, std::nullopt, std::get<14>(*event).position, true);
+        break;
+      case 15:
+        typing = std::get<15>(*event).text;
+        break;
+      case 16:
+        go_to_typed(scope);
+        break;
+      case 17:
+        if (std::get<17>(*event).pressed && std::get<17>(*event).key == vui::key_t::escape)
+          editing_path = false;
+        break;
       case 11:
         if (std::get<11>(*event))
           trash_confirmed(scope);
@@ -1798,7 +2017,7 @@ struct explorer_t
         else if (ctrl && shift && key.key == vui::key_t::c)
         {
           const auto *e = table.selected_entry();
-          const auto target = e ? shell::join(path, e->name) : path;
+          const auto target = portable(e ? shell::join(path, e->name) : path);
           scope.window().set_clipboard_text(target);
           say("Copied " + target);
         }
@@ -1885,6 +2104,46 @@ int probe_and_check()
   {
     std::ofstream(native(shell::join(shell::join(shell::join(scratch, "folder"), "deep"), "x.txt"))) << "x\n";
     std::ofstream(native(shell::join(scratch, "file.txt"))) << "y\n";
+  }
+  // A thumbnail of a picture the probe draws itself: a 64x32 gradient as an uncompressed BMP, a
+  // format every platform's thumbnailer reads. Required where the system has thumbnails built in;
+  // a bare Linux container has no thumbnailer, so there it is only reported.
+  {
+    const int w = 64, h = 32;
+    std::string bmp(54 + std::size_t(w) * h * 3, '\0');
+    const auto put = [&bmp](std::size_t at, std::uint32_t v, int bytes)
+    {
+      for (int i = 0; i < bytes; ++i)
+        bmp[at + std::size_t(i)] = char((v >> (8 * i)) & 0xff);
+    };
+    bmp[0] = 'B';
+    bmp[1] = 'M';
+    put(2, std::uint32_t(bmp.size()), 4);
+    put(10, 54, 4);
+    put(14, 40, 4);
+    put(18, std::uint32_t(w), 4);
+    put(22, std::uint32_t(h), 4);
+    put(26, 1, 2);
+    put(28, 24, 2);
+    put(34, std::uint32_t(w * h * 3), 4);
+    for (int y = 0; y < h; ++y)
+    {
+      for (int x = 0; x < w; ++x)
+      {
+        const auto at = 54 + (std::size_t(y) * w + std::size_t(x)) * 3;
+        bmp[at] = char(255 - x * 4);
+        bmp[at + 1] = char(y * 8);
+        bmp[at + 2] = char(x * 4);
+      }
+    }
+    std::ofstream(native(shell::join(scratch, "picture.bmp")), std::ios::binary) << bmp;
+    const auto picture = shell::thumbnail(shell::join(scratch, "picture.bmp"), 128);
+#if defined(__linux__)
+    std::printf("  thumbnail of a BMP: %s\n", picture ? (std::to_string(picture->width) + " x " + std::to_string(picture->height)).c_str() : picture.error().c_str());
+#else
+    check(picture && picture->width > 0 && picture->height > 0 && picture->width >= picture->height && picture->rgba.size() == std::size_t(picture->width) * picture->height * 4,
+          "a thumbnail of a picture" + (picture ? " (" + std::to_string(picture->width) + " x " + std::to_string(picture->height) + ")" : ": " + picture.error()));
+#endif
   }
   const auto gone = shell::remove_permanently(shell::join(scratch, "folder"));
   check(gone && !std::filesystem::exists(native(shell::join(scratch, "folder"))), "a folder is deleted permanently, with what is in it" + (gone ? std::string() : ": " + gone.error()));

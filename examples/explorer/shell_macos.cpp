@@ -6,7 +6,9 @@
 
 #include "shell.h"
 
+#include <CoreGraphics/CoreGraphics.h>
 #include <CoreServices/CoreServices.h>
+#include <QuickLook/QuickLook.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <pwd.h>
@@ -308,6 +310,47 @@ bool has_properties()
 std::expected<void, std::string> properties(const std::string &)
 {
   return std::unexpected(std::string("no properties window on this system"));
+}
+
+std::expected<picture_t, std::string> thumbnail(const std::string &path, int pixels)
+{
+  // QuickLook's thumbnail, what Finder shows; the C call is deprecated in favour of
+  // QLThumbnailGenerator, which would need Objective-C, and still works.
+  CFURLRef url = url_for(path);
+  if (!url)
+    return std::unexpected(std::string("cannot reach it"));
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  CGImageRef image = QLThumbnailImageCreate(kCFAllocatorDefault, url, CGSizeMake(pixels, pixels), nullptr);
+#pragma clang diagnostic pop
+  CFRelease(url);
+  if (!image)
+    return std::unexpected(std::string("no thumbnail"));
+  picture_t out;
+  out.width = int(CGImageGetWidth(image));
+  out.height = int(CGImageGetHeight(image));
+  out.rgba.assign(std::size_t(out.width) * out.height * 4, 0);
+  CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef context = CGBitmapContextCreate(out.rgba.data(), std::size_t(out.width), std::size_t(out.height), 8, std::size_t(out.width) * 4, srgb, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+  if (context)
+  {
+    CGContextDrawImage(context, CGRectMake(0, 0, out.width, out.height), image);
+    CGContextRelease(context);
+  }
+  CGColorSpaceRelease(srgb);
+  CGImageRelease(image);
+  if (!context)
+    return std::unexpected(std::string("could not draw the thumbnail"));
+  // Premultiplied out of Core Graphics, straight for the caller.
+  for (std::size_t i = 0; i < out.rgba.size(); i += 4)
+  {
+    const int a = out.rgba[i + 3];
+    if (a == 0 || a == 255)
+      continue;
+    for (int c = 0; c < 3; ++c)
+      out.rgba[i + std::size_t(c)] = std::uint8_t(std::min(255, out.rgba[i + std::size_t(c)] * 255 / a));
+  }
+  return out;
 }
 
 std::expected<void, std::string> trash(const std::string &path)

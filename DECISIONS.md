@@ -813,3 +813,68 @@ its place.
 `--probe` deletes a scratch folder permanently on every platform, and moves a file to the Trash
 only with `VUI_PROBE_TRASH=1`, which CI sets: anywhere else it would leave a file in the user's own
 Trash.
+
+## G55. Images: a node, a second atlas, a sixth prim kind
+
+vui could draw text, icons and heatmaps, all from one atlas of single-byte coverage, and nothing in
+colour. `image_t` draws RGBA pixels at a size, with rounded corners and an opacity.
+
+- **A second atlas** in the text engine, RGBA and four bytes a texel, packed in shelves like the
+  glyph atlas and found again by the `image_data_t`'s address and version. It starts at 512 texels,
+  doubles to 4096, and empties when it cannot grow, which the runtime turns into a second layout as
+  it already does for glyphs. Each image gets a one-texel border copied from its own edge, so
+  bilinear filtering at an edge never reads a neighbour.
+- **The renderer has two textures**: the coverage atlas at binding 0, as before, and the image atlas
+  at binding 1, `R8G8B8A8_SRGB` so that a sample is linear, read through a bilinear, clamping sampler
+  at binding 2. The upload code became one `texture_t` used twice; both uploads share the frame's
+  staging buffer at separate offsets, since both copies run after everything has been written.
+- **Prim kind 5** maps each pixel's centre into the image's texels, kept half a texel inside so the
+  filter stays on its border, samples, premultiplies and applies the rounded-corner mask the shapes
+  use. `test_ui_render.cpp` draws a four-colour image offscreen and checks each quadrant, a cut corner
+  and the opacity.
+- Decoding is not vui's: an image arrives as pixels. What draws a file's picture is the platform
+  (G57), which keeps parsers of untrusted files out of the toolkit.
+
+## G56. Focus can be given from code
+
+`ui::request_focus(scope, pressable)` focuses a pressable once a box showing it is drawn, and gives
+up after a few frames if none is: a field that has just appeared is not on screen until the next
+frame, and focusing it before then would be dropped as focus on something not shown. The explorer's
+path bar needs it -- a double click turns the breadcrumbs into a field, which must have the keyboard
+at once -- along with `line_edit_t::select_all()`, so the path is selected and typing replaces it.
+
+## G57. Thumbnails come from the system, not from bundled decoders
+
+An explorer feeds a decoder any file on disk. Image and video parsers are where security holes
+live, bundling them costs megabytes, and they would still show neither a PDF nor a video. So the
+explorer asks the platform, which already has the thumbnail handlers its own file manager uses:
+
+- **Windows**: `IShellItemImageFactory` with thumbnails only, so a file with none falls back to the
+  text preview instead of an icon. The bitmap comes premultiplied, or with no alpha at all for most
+  photos, and is turned into straight alpha.
+- **macOS**: QuickLook's `QLThumbnailImageCreate`, a C call that is deprecated but works, drawn into
+  an sRGB bitmap.
+- **Linux**: the freedesktop thumbnail cache, named by the MD5 of the file's URI and used when newer
+  than the file; else a thumbnailer the desktop installed for the file's type, run for at most five
+  seconds into a temporary file. The PNG that comes out is read with `stb_image`, PNG only, pinned
+  through cmake-dep: what is decoded is a file the system's thumbnailer made, never the user's file.
+
+Thumbnails are fetched on the helper thread with the text preview and win over it when there is one,
+and the last 64 are kept by path and modification time. `--probe` draws a 64x32 BMP and asks for its
+thumbnail, required on Windows and macOS, reported on Linux, where a bare container has no
+thumbnailer.
+
+## G58. The window frame follows the system's dark mode
+
+On Windows a window's title bar is light unless the program asks DWM for the dark one, which
+WezTerm and Explorer do and vui did not, so a dark UI sat under a light frame. `window_config_t`
+has `frame_theme`: `system` (the default) reads the user's app mode, `AppsUseLightTheme`, and asks
+again when Windows sends `ImmersiveColorSet`; `light` and `dark` force it. The attribute is
+`DWMWA_USE_IMMERSIVE_DARK_MODE`, 20, or 19 on Windows 10 before 20H1. macOS follows the system
+appearance by itself, and on Linux the frame is the window manager's.
+
+The explorer also gained, at the user's asking: paths copy with forward slashes, which Windows
+accepts and a shell or a CMake file wants, with "Copy path with backslashes" for the other; a path
+bar that becomes a field on a double click, takes a typed or pasted path (quotes dropped, `~` for
+home, either slash) and opens a file's folder with the file selected; and a context menu on the
+path bar.

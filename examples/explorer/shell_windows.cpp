@@ -415,6 +415,53 @@ std::expected<void, std::string> properties(const std::string &path)
   return {};
 }
 
+std::expected<picture_t, std::string> thumbnail(const std::string &path, int pixels)
+{
+  // The shell's image for an item, the same Explorer's thumbnails are: asked for thumbnails only, so
+  // a file with none is reported rather than drawn as its icon.
+  com_ptr_t<IShellItemImageFactory> factory;
+  if (FAILED(SHCreateItemFromParsingName(wide(path).c_str(), nullptr, IID_PPV_ARGS(factory.put()))))
+    return std::unexpected(std::string("cannot reach it"));
+  HBITMAP bitmap = nullptr;
+  if (FAILED(factory->GetImage(SIZE{pixels, pixels}, SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK, &bitmap)) || !bitmap)
+    return std::unexpected(std::string("no thumbnail"));
+  BITMAP info{};
+  GetObjectW(bitmap, sizeof info, &info);
+  picture_t out;
+  out.width = info.bmWidth;
+  out.height = std::abs(info.bmHeight);
+  BITMAPINFO request{};
+  request.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  request.bmiHeader.biWidth = out.width;
+  // Negative: rows from the top.
+  request.bmiHeader.biHeight = -out.height;
+  request.bmiHeader.biPlanes = 1;
+  request.bmiHeader.biBitCount = 32;
+  request.bmiHeader.biCompression = BI_RGB;
+  std::vector<std::uint8_t> bgra(std::size_t(out.width) * out.height * 4);
+  HDC dc = GetDC(nullptr);
+  const int rows = GetDIBits(dc, bitmap, 0, UINT(out.height), bgra.data(), &request, DIB_RGB_COLORS);
+  ReleaseDC(nullptr, dc);
+  DeleteObject(bitmap);
+  if (rows != out.height || out.width <= 0)
+    return std::unexpected(std::string("could not read the thumbnail"));
+  // BGRA with premultiplied alpha, or no alpha at all (every alpha zero) for most photos.
+  bool any_alpha = false;
+  for (std::size_t i = 3; i < bgra.size(); i += 4)
+    any_alpha = any_alpha || bgra[i] != 0;
+  out.rgba.resize(bgra.size());
+  for (std::size_t i = 0; i < bgra.size(); i += 4)
+  {
+    const std::uint8_t a = any_alpha ? bgra[i + 3] : 255;
+    const auto straight = [a](std::uint8_t c) { return a == 0 || a == 255 ? c : std::uint8_t(std::min(255, c * 255 / a)); };
+    out.rgba[i] = straight(bgra[i + 2]);
+    out.rgba[i + 1] = straight(bgra[i + 1]);
+    out.rgba[i + 2] = straight(bgra[i]);
+    out.rgba[i + 3] = a;
+  }
+  return out;
+}
+
 std::expected<void, std::string> trash(const std::string &path)
 {
   // The shell's own delete, with undo allowed: the Recycle Bin. No dialogs -- the explorer has

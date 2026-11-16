@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <cerrno>
 #include <ctime>
@@ -24,6 +25,19 @@
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+
+#include <signal.h>
+#include <spawn.h>
+#include <sys/types.h>
+
+// PNG only: what is decoded here is a thumbnail the system's own thumbnailer made, never the user's
+// file itself (G57).
+#define STBI_ONLY_PNG
+#define STBI_NO_STDIO
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
+extern char **environ;
 
 namespace shell
 {
@@ -199,6 +213,143 @@ std::string default_for(const std::string &mime)
     }
   }
   return {};
+}
+
+// MD5, for the freedesktop thumbnail cache, which names a thumbnail by the hash of its file's URI.
+std::string md5_hex(const std::string &message)
+{
+  static constexpr std::array<std::uint32_t, 64> k = {
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1, 0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391};
+  static constexpr std::array<int, 64> r = {7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+                                            4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};
+  std::uint32_t h[4] = {0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476};
+  std::vector<std::uint8_t> data(message.begin(), message.end());
+  const std::uint64_t bits = std::uint64_t(data.size()) * 8;
+  data.push_back(0x80);
+  while (data.size() % 64 != 56)
+    data.push_back(0);
+  for (int i = 0; i < 8; ++i)
+    data.push_back(std::uint8_t(bits >> (8 * i)));
+  for (std::size_t chunk = 0; chunk < data.size(); chunk += 64)
+  {
+    std::uint32_t w[16];
+    for (int i = 0; i < 16; ++i)
+      w[i] = std::uint32_t(data[chunk + i * 4]) | std::uint32_t(data[chunk + i * 4 + 1]) << 8 | std::uint32_t(data[chunk + i * 4 + 2]) << 16 | std::uint32_t(data[chunk + i * 4 + 3]) << 24;
+    std::uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
+    for (int i = 0; i < 64; ++i)
+    {
+      std::uint32_t f;
+      int g;
+      if (i < 16)
+      {
+        f = (b & c) | (~b & d);
+        g = i;
+      }
+      else if (i < 32)
+      {
+        f = (d & b) | (~d & c);
+        g = (5 * i + 1) % 16;
+      }
+      else if (i < 48)
+      {
+        f = b ^ c ^ d;
+        g = (3 * i + 5) % 16;
+      }
+      else
+      {
+        f = c ^ (b | ~d);
+        g = (7 * i) % 16;
+      }
+      const std::uint32_t t = d;
+      d = c;
+      c = b;
+      const std::uint32_t x = a + f + k[std::size_t(i)] + w[g];
+      b = b + ((x << r[std::size_t(i)]) | (x >> (32 - r[std::size_t(i)])));
+      a = t;
+    }
+    h[0] += a;
+    h[1] += b;
+    h[2] += c;
+    h[3] += d;
+  }
+  std::string out;
+  char hex[3];
+  for (auto word : h)
+  {
+    for (int i = 0; i < 4; ++i)
+    {
+      std::snprintf(hex, sizeof hex, "%02x", (word >> (8 * i)) & 0xff);
+      out += hex;
+    }
+  }
+  return out;
+}
+
+std::string file_uri(const std::string &path)
+{
+  std::string out = "file://";
+  for (const unsigned char c : path)
+  {
+    if (std::isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~')
+      out += char(c);
+    else
+    {
+      char b[4];
+      std::snprintf(b, sizeof b, "%%%02X", c);
+      out += b;
+    }
+  }
+  return out;
+}
+
+std::expected<picture_t, std::string> load_png(const std::string &file)
+{
+  const auto bytes = [&]
+  {
+    std::ifstream in(file, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }();
+  if (bytes.empty())
+    return std::unexpected(std::string("no thumbnail"));
+  int w = 0, h = 0, channels = 0;
+  stbi_uc *pixels = stbi_load_from_memory(reinterpret_cast<const stbi_uc *>(bytes.data()), int(bytes.size()), &w, &h, &channels, 4);
+  if (!pixels)
+    return std::unexpected(std::string("the thumbnail could not be read"));
+  picture_t out;
+  out.width = w;
+  out.height = h;
+  out.rgba.assign(pixels, pixels + std::size_t(w) * h * 4);
+  stbi_image_free(pixels);
+  return out;
+}
+
+// Runs a thumbnailer and waits for it, five seconds at most: it is a program the system installed,
+// but it parses a file nobody vouched for, and a hung one must not hold the explorer's helper.
+bool run_and_wait(const std::vector<std::string> &argv)
+{
+  std::vector<char *> args;
+  for (const auto &a : argv)
+    args.push_back(const_cast<char *>(a.c_str()));
+  args.push_back(nullptr);
+  pid_t pid = 0;
+  if (posix_spawnp(&pid, args[0], nullptr, nullptr, args.data(), environ) != 0)
+    return false;
+  for (int waited = 0; waited < 500; ++waited)
+  {
+    int status = 0;
+    const pid_t r = waitpid(pid, &status, WNOHANG);
+    if (r == pid)
+      return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    if (r < 0)
+      return false;
+    usleep(10000);
+  }
+  kill(pid, SIGKILL);
+  waitpid(pid, nullptr, 0);
+  return false;
 }
 
 bool on_path(const std::string &program)
@@ -558,6 +709,104 @@ std::expected<void, std::string> properties(const std::string &)
 // taken there, and Trash/info gets a .trashinfo saying where it came from and when, which is what
 // lets a file manager restore it. Only the home trash: something on another file system cannot be
 // renamed into it, and that is reported rather than copied.
+std::expected<picture_t, std::string> thumbnail(const std::string &path, int pixels)
+{
+  // The freedesktop.org thumbnail cache first: a file manager has usually made one already, named by
+  // the MD5 of the file's URI, and it counts only if it is newer than the file.
+  const auto uri = file_uri(path);
+  const auto name = md5_hex(uri) + ".png";
+  const auto cache = env("XDG_CACHE_HOME", home() + "/.cache") + "/thumbnails/";
+  struct stat source{};
+  if (::stat(path.c_str(), &source) != 0)
+    return std::unexpected(std::string("cannot reach it"));
+  const std::vector<std::string> sizes = pixels > 256 ? std::vector<std::string>{"xx-large", "x-large", "large", "normal"} : std::vector<std::string>{"large", "x-large", "normal"};
+  for (const auto &size : sizes)
+  {
+    const auto file = cache + size + "/" + name;
+    struct stat cached{};
+    if (::stat(file.c_str(), &cached) == 0 && cached.st_mtime >= source.st_mtime)
+    {
+      if (auto picture = load_png(file))
+        return picture;
+    }
+  }
+  // Else a thumbnailer for its type, as the desktop installed them, into a file of our own.
+  const auto mime = mime_of(path);
+  std::vector<std::string> dirs{env("XDG_DATA_HOME", home() + "/.local/share")};
+  for (auto &d : split(env("XDG_DATA_DIRS", "/usr/local/share:/usr/share"), ':'))
+    dirs.push_back(d);
+  for (const auto &dir : dirs)
+  {
+    DIR *d = opendir((dir + "/thumbnailers").c_str());
+    if (!d)
+      continue;
+    std::vector<std::string> entries;
+    while (auto *e = readdir(d))
+      entries.emplace_back(e->d_name);
+    closedir(d);
+    for (const auto &entry : entries)
+    {
+      if (entry.size() < 13 || entry.compare(entry.size() - 12, 12, ".thumbnailer") != 0)
+        continue;
+      std::ifstream in(dir + "/thumbnailers/" + entry);
+      std::string exec, try_exec;
+      bool fits = false;
+      for (std::string line; std::getline(in, line);)
+      {
+        if (line.rfind("Exec=", 0) == 0)
+          exec = line.substr(5);
+        else if (line.rfind("TryExec=", 0) == 0)
+          try_exec = line.substr(8);
+        else if (line.rfind("MimeType=", 0) == 0)
+        {
+          for (const auto &m : split(line.substr(9), ';'))
+            fits = fits || m == mime;
+        }
+      }
+      if (!fits || exec.empty() || (!try_exec.empty() && !on_path(try_exec)))
+        continue;
+      char out_name[] = "/tmp/vui-thumbnail-XXXXXX.png";
+      const int fd = mkstemps(out_name, 4);
+      if (fd < 0)
+        continue;
+      ::close(fd);
+      // Field codes: %i the file, %u its URI, %o where to write, %s the size.
+      std::vector<std::string> argv;
+      for (const auto &word : split(exec, ' '))
+      {
+        std::string arg;
+        for (std::size_t i = 0; i < word.size(); ++i)
+        {
+          if (word[i] == '%' && i + 1 < word.size())
+          {
+            const char code = word[++i];
+            if (code == 'i')
+              arg += path;
+            else if (code == 'u')
+              arg += uri;
+            else if (code == 'o')
+              arg += out_name;
+            else if (code == 's')
+              arg += std::to_string(pixels);
+            else if (code == '%')
+              arg += '%';
+            continue;
+          }
+          arg += word[i];
+        }
+        argv.push_back(arg);
+      }
+      std::expected<picture_t, std::string> picture = std::unexpected(std::string("no thumbnail"));
+      if (!argv.empty() && run_and_wait(argv))
+        picture = load_png(out_name);
+      ::unlink(out_name);
+      if (picture)
+        return picture;
+    }
+  }
+  return std::unexpected(std::string("no thumbnail"));
+}
+
 std::expected<void, std::string> trash(const std::string &path)
 {
   const auto base = env("XDG_DATA_HOME", home() + "/.local/share") + "/Trash";

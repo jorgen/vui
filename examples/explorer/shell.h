@@ -93,6 +93,18 @@ std::expected<void, std::string> reveal(const std::string &path);
 [[nodiscard]] bool has_properties();
 std::expected<void, std::string> properties(const std::string &path);
 
+// A picture of a file, as the system's own file manager would show it: an image scaled down, a frame
+// of a video, the first page of a PDF -- whatever the installed thumbnail handlers make. RGBA, sRGB,
+// straight alpha, rows from the top, no larger than `pixels` on its longer side. Empty when the
+// system has no thumbnail for the file; an icon is not a thumbnail. Slow: call it on a worker.
+struct picture_t
+{
+  int width = 0;
+  int height = 0;
+  std::vector<std::uint8_t> rgba;
+};
+[[nodiscard]] std::expected<picture_t, std::string> thumbnail(const std::string &path, int pixels);
+
 // Moves a file or a folder, with everything in it, to the Recycle Bin or Trash, from where it can be
 // restored. May take a while for a big folder.
 std::expected<void, std::string> trash(const std::string &path);

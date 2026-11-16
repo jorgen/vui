@@ -24,6 +24,15 @@ CmDepFetchPackage(harfbuzz 15.1.0
     https://github.com/harfbuzz/harfbuzz/releases/download/15.1.0/harfbuzz-15.1.0.tar.xz
     SHA256=0fc7c565443a5f4be7da65ac5ee5bd737d9b158dc908708b7689a0a5796b0c8d)
 
+# stb_image, PNG only, for the explorer example on Linux, where a thumbnail comes as a PNG from the
+# freedesktop cache or a thumbnailer (G57). Declared with the examples on every platform, so the lock
+# holds it wherever it is written; compiled only on Linux.
+if(VUI_BUILD_EXAMPLES)
+    CmDepFetchPackage(stb 31c1ad3
+        https://github.com/nothings/stb/archive/31c1ad37456438565541f4919958214b6e762fb4.tar.gz
+        SHA256=e4e3bba9c572a4a4148373a914d88ea0f0d11de8cc2c66739926e7eca0223319)
+endif()
+
 if(VUI_BUILD_TESTS)
     CmDepFetchPackage(doctest v2.4.11
         https://github.com/doctest/doctest/archive/refs/tags/v2.4.12.tar.gz

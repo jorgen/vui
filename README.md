@@ -74,7 +74,7 @@ no second loop to hand work across and nothing to lock.
   propagation and cached layout, so unchanged parts are not drawn again. The shaders are written
   in Slang, and the SPIR-V is committed.
 - Rows, columns and flex layout, clipping, popups, focus and keyboard navigation, icons from
-  paths, plus a set of widgets: buttons, checkboxes, comboboxes, labels, line edits, and a
+  paths, images, plus a set of widgets: buttons, checkboxes, comboboxes, labels, line edits, and a
   fixed-width text edit that serves as an input pane or as a scrolling log.
 
 ## A taste
@@ -194,7 +194,7 @@ cmake --build --preset dist-windows
 | `vui_ui_chips` | 200,000 chips, the stress test |
 | `vui_ui_widgets` | the widget set |
 | `vui_ui_text` | labels, line edits, a notes pane and a log fed by a timer |
-| `vui_explorer` | a file explorer: folders that open at once and fill in as they are read, natural sorting, filtering and type-ahead, a context menu with the applications that open the file, delete to the Recycle Bin or for good, previews, on Windows, Linux and macOS |
+| `vui_explorer` | a file explorer: folders that open at once and fill in as they are read, natural sorting, filtering and type-ahead, a context menu with the applications that open the file, delete to the Recycle Bin or for good, a path bar to type or paste into, thumbnails and text previews from the system, on Windows, Linux and macOS |
 | `vui_task_manager` | the advanced one: live CPU, per-core and memory charts, a sortable, filterable process table and an activity log, fed by a sampling thread on Windows, Linux and macOS |
 | `vui_vulkan_clear`, `vui_d3d12_clear`, `vui_metal_clear` | bring your own renderer |
 

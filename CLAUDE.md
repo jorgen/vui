@@ -71,6 +71,9 @@ readme.
   file only compiles in CI; `vui_task_manager --probe` checks the layer there and on Linux.
 - The window keeps only the latest pointer move queued in one turn: a test that sends several must
   let each through (settle) before the next.
+- Images (G55) live in a second, RGBA atlas next to the glyph atlas; the shader's prim kind 5
+  samples it. A change to `src/shaders/ui.slang` needs `ui_spirv.h` regenerated:
+  `-DVUI_FETCH_SLANG=ON` then `cmake --build build --target vui_shaders`.
 - No graphics library is linked. GL, EGL and Vulkan are loaded at run time (G6, G31). The UI
   renderer prefers Vulkan and falls back to GL (G32). Its SPIR-V is committed in
   `src/shaders/ui_spirv.h`, and only the `vui_shaders` target (slangc) regenerates it.

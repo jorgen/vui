@@ -24,6 +24,13 @@ CmDepLocked(harfbuzz
     DECLARED_BY .
     REQUESTED_BY [==[.=15.1.0]==])
 
+CmDepLocked(stb
+    VERSION [==[31c1ad3]==]
+    URL [==[https://github.com/nothings/stb/archive/31c1ad37456438565541f4919958214b6e762fb4.tar.gz]==]
+    HASH SHA256=e4e3bba9c572a4a4148373a914d88ea0f0d11de8cc2c66739926e7eca0223319
+    DECLARED_BY .
+    REQUESTED_BY [==[.=31c1ad3]==])
+
 CmDepLocked(vio
     VERSION [==[1efa34f]==]
     GIT [==[https://github.com/jorgen/vio.git]==]
