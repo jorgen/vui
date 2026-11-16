@@ -3,7 +3,8 @@
 // and an optional border, or with blur > 0 a Gaussian-blurred one, which is a shadow. Coverage --
 // glyphs and icons -- is read from the atlas texel for texel, one texel per pixel. A segment is a
 // line, by its distance, mitred against its neighbours or round at its ends; an area is the region
-// under one, for a filled plot (G41, G44); a heatmap is a grid of atlas values through viridis.
+// under one, for a filled plot (G41, G44); a heatmap is a grid of atlas values through viridis; an
+// image is the image atlas sampled bilinearly, with rounded corners if asked (G55).
 //
 // The compiled SPIR-V is committed as ui_spirv.h (G25); `cmake --build <dir> --target
 // vui_shaders` regenerates it, and needs slangc only then. The interface below -- attribute
@@ -17,7 +18,7 @@ struct Prim
     [[vk::location(2)]] float4 fill : FILL;          // sRGB, straight alpha
     [[vk::location(3)]] float4 border_color : BORDER;
     [[vk::location(4)]] float2 params : PARAMS;      // border width, blur sigma
-    [[vk::location(5)]] uint kind : KIND;            // 0 shape, 1 coverage, 2 segment, 3 area, 4 heatmap (prim_kind_t)
+    [[vk::location(5)]] uint kind : KIND;            // 0 shape, 1 coverage, 2 segment, 3 area, 4 heatmap, 5 image (prim_kind_t)
 };
 
 struct Push
@@ -38,6 +39,10 @@ float2 at(float2 p)
 
 // The glyph atlas: one channel of coverage, read with Load, so no sampler.
 [[vk::binding(0, 0)]] Texture2D<float> atlas;
+// The image atlas: sRGB RGBA with straight alpha, so a sample is linear; read through a bilinear,
+// clamping sampler (G55).
+[[vk::binding(1, 0)]] Texture2D<float4> images;
+[[vk::binding(2, 0)]] SamplerState linear_sampler;
 
 struct Varyings
 {
@@ -143,6 +148,22 @@ Varyings vertexMain(Prim prim, uint vertex : SV_VulkanVertexID)
         out.glyph = float4(0.0, 0.0, 3.0, 0.0);
         return out;
     }
+    if (prim.kind == 5)
+    {
+        // An image: its rectangle, the box it rounds, and where its texels are.
+        const float2 low = at(prim.rect.xy);
+        const float2 size = prim.rect.zw * push.zoom * scale;
+        const float2 pixel = low + corner * size;
+        out.position = float4(pixel / push.target * 2.0 - 1.0, 0.0, 1.0);
+        const float2 half_size = size * 0.5;
+        out.box = float4(low + half_size, half_size);
+        out.radii = float4(min(prim.params.x * push.zoom * scale.x, min(half_size.x, half_size.y)));
+        out.fill = float4(1.0, 1.0, 1.0, prim.fill.a);
+        out.border = prim.radii;
+        out.params = float2(0.0);
+        out.glyph = float4(0.0, 0.0, 5.0, 0.0);
+        return out;
+    }
     if (prim.kind == 4)
     {
         // A heatmap: its rectangle, and where its cells are in the atlas.
@@ -220,7 +241,22 @@ float erf_approx(float x)
 float4 fragmentMain(Varyings v) : SV_Target
 {
     float4 color;
-    if (v.glyph.z > 3.5)
+    if (v.glyph.z > 4.5)
+    {
+        // The texel this pixel's centre maps to, kept half a texel inside the image so the filter
+        // reads its own border and never a neighbour's.
+        const float2 p = v.position.xy;
+        const float2 uv = (p - (v.box.xy - v.box.zw)) / (2.0 * v.box.zw);
+        const float2 texel = clamp(v.border.xy + uv * v.border.zw, v.border.xy + 0.5, v.border.xy + v.border.zw - 0.5);
+        uint width, height;
+        images.GetDimensions(width, height);
+        const float4 c = images.SampleLevel(linear_sampler, texel / float2(float(width), float(height)), 0.0);
+        float mask = 1.0;
+        if (v.radii.x > 0.0)
+            mask = saturate(0.5 - rounded_box(p - v.box.xy, v.box.zw, v.radii));
+        color = float4(c.rgb * c.a, c.a) * (v.fill.a * mask);
+    }
+    else if (v.glyph.z > 3.5)
     {
         // A heatmap cell, nearest-sampled: which cell this pixel's centre is in, in logical units.
         const float2 q = (v.position.xy / push.scale - push.origin) / push.zoom;

@@ -796,6 +796,29 @@ struct heatmap_t
   float opacity = 1;
 };
 
+// The pixels of an image_t: `width * height` texels of RGBA, 8 bits each, sRGB with straight alpha,
+// rows from the top. Shared, because an image is uploaded into the image atlas once and found again
+// by this object's address: after changing `rgba`, bump `version` so the next layout uploads it again
+// (G55).
+struct image_data_t
+{
+  int width = 0;
+  int height = 0;
+  std::vector<std::uint8_t> rgba;
+  std::uint64_t version = 0;
+};
+
+// Pixels drawn `size` logical units large, filtered bilinearly and blended in linear space (G55): a
+// thumbnail, a preview, an avatar. `radius` rounds its corners. An image more than 4096 texels on a
+// side, after the 1-texel border every image gets, is not drawn: scale it down first.
+struct image_t
+{
+  extent_t size;
+  std::shared_ptr<const image_data_t> data;
+  float radius = 0;
+  float opacity = 1;
+};
+
 // Empty space that grows: `row_t{.children = {label, ui::spacer_t{}, button}}` puts the button at
 // the far end of a row that was given more room than it needs.
 struct spacer_t
@@ -874,7 +897,7 @@ struct mount_t
   }
 };
 
-struct node_t : std::variant<box_t, row_t, column_t, mount_t, text_t, icon_t, at_t, polyline_t, spacer_t, heatmap_t>
+struct node_t : std::variant<box_t, row_t, column_t, mount_t, text_t, icon_t, at_t, polyline_t, spacer_t, heatmap_t, image_t>
 {
   using variant::variant;
 };
@@ -1432,6 +1455,15 @@ void emit(event_source_t<E> &source, const E &event, scope_t &scope)
 namespace detail
 {
 void invalidate_component(runtime_t &runtime, void *component, node_t (*view)(const void *)) noexcept;
+void request_focus(runtime_t &runtime, const pressable_t *source) noexcept;
+} // namespace detail
+
+// Give `source` keyboard focus, from a behaviour, as soon as a box showing it has been drawn: a field
+// that has just appeared is not on screen until the next frame (G56). The focus shows its ring, as
+// focus given by the keyboard does.
+inline void request_focus(scope_t &scope, const pressable_t &source)
+{
+  detail::request_focus(detail::scope_runtime(scope), &source);
 }
 
 // Rebuild `component` at the next frame, from a behaviour of any component in its window: for state
@@ -1852,6 +1884,10 @@ enum class prim_kind_t : std::uint32_t
   // A heatmap's cells: x, y, width and height in logical units; radii[0..1] the atlas texel of its
   // first cell and radii[2..3] its columns and rows; `fill`'s alpha its opacity (G44).
   heatmap = 4,
+  // An image: x, y, width and height in logical units; radii[0..1] the image atlas texel it starts
+  // at and radii[2..3] its size in texels; `border_width` its corner radius in logical units;
+  // `fill`'s alpha its opacity (G55).
+  image = 5,
 };
 
 // One primitive: an instanced quad whose shape the fragment shader computes. Relative to the origin
@@ -1873,15 +1909,16 @@ struct prim_t
 };
 static_assert(sizeof(prim_t) == 80);
 
-// The glyph atlas as a renderer sees it: one byte of coverage per texel, rows top to bottom. A
-// renderer that last saw `generation` uploads only `dirty`; any other generation is a new atlas and
-// is uploaded whole.
+// An atlas as a renderer sees it, rows top to bottom: the glyph atlas, one byte of coverage per
+// texel, or the image atlas, four bytes of sRGB RGBA. A renderer that last saw `generation` uploads
+// only `dirty`; any other generation is a new atlas and is uploaded whole.
 struct atlas_view_t
 {
   std::span<const std::uint8_t> pixels;
   extent_t extent;
   rect_t dirty;
   std::uint64_t generation = 0;
+  int bytes_per_texel = 1;
 };
 
 // A range of prims drawn at one origin. Moving a chunk changes its origin and nothing else (G29).
@@ -1912,6 +1949,8 @@ struct display_list_t
   extent_t framebuffer;
   float scale = 1;
   atlas_view_t atlas;
+  // What image prims sample (G55).
+  atlas_view_t images;
 };
 
 // A Vulkan device the program already has, for the renderer to share rather than create its own

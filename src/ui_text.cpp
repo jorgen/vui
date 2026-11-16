@@ -273,6 +273,154 @@ int ceil_div(int value, int by) noexcept
 }
 } // namespace
 
+// The image atlas (G55): RGBA, four bytes a texel, packed in shelves like the glyph atlas. Each image
+// gets a border of its own edge texels, so bilinear filtering at its edge never reads a neighbour.
+// Starts small, doubles as it fills, and empties when it cannot grow, which the caller turns into a
+// second layout as it does for glyphs.
+struct image_atlas_t
+{
+  static constexpr int initial = 512;
+  static constexpr int largest = 4096;
+
+  struct shelf_t
+  {
+    int y = 0;
+    int height = 0;
+    int x = 0;
+  };
+  struct region_t
+  {
+    std::shared_ptr<const image_data_t> data;
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    std::uint64_t version = 0;
+  };
+
+  std::vector<std::uint8_t> pixels;
+  int width = 0;
+  int height = 0;
+  std::vector<shelf_t> shelves;
+  int next_y = 0;
+  rect_t dirty;
+  std::uint64_t generation = 0;
+  std::unordered_map<const image_data_t *, region_t> regions;
+
+  void empty()
+  {
+    std::fill(pixels.begin(), pixels.end(), std::uint8_t(0));
+    shelves.clear();
+    next_y = 0;
+    regions.clear();
+    dirty = {};
+    ++generation;
+  }
+
+  void grow(int side)
+  {
+    std::vector<std::uint8_t> grown(std::size_t(side) * side * 4, 0);
+    for (int row = 0; row < height; ++row)
+      std::memcpy(&grown[std::size_t(row) * side * 4], &pixels[std::size_t(row) * width * 4], std::size_t(width) * 4);
+    pixels = std::move(grown);
+    width = height = side;
+    dirty = {};
+    ++generation;
+  }
+
+  bool place(int w, int h, int &x, int &y)
+  {
+    for (auto &shelf : shelves)
+    {
+      if (h <= shelf.height && h * 4 >= shelf.height * 3 && shelf.x + w <= width)
+      {
+        x = shelf.x;
+        y = shelf.y;
+        shelf.x += w;
+        return true;
+      }
+    }
+    if (next_y + h <= height && w <= width)
+    {
+      shelves.push_back({next_y, h, w});
+      x = 0;
+      y = next_y;
+      next_y += h;
+      return true;
+    }
+    return false;
+  }
+
+  void touched(const rect_t &added)
+  {
+    if (dirty.width == 0 || dirty.height == 0)
+    {
+      dirty = added;
+      return;
+    }
+    const int x0 = std::min(dirty.x, added.x);
+    const int y0 = std::min(dirty.y, added.y);
+    const int x1 = std::max(dirty.x + dirty.width, added.x + added.width);
+    const int y1 = std::max(dirty.y + dirty.height, added.y + added.height);
+    dirty = {x0, y0, x1 - x0, y1 - y0};
+  }
+
+  // Where `data` is, its texels written there if they are new. Null when it does not fit; `emptied`
+  // says the atlas had to be emptied to make room, which invalidates what was laid out before.
+  const region_t *find(const std::shared_ptr<const image_data_t> &data, bool &emptied)
+  {
+    const auto *d = data.get();
+    if (!d || d->width <= 0 || d->height <= 0 || d->rgba.size() < std::size_t(d->width) * std::size_t(d->height) * 4)
+      return nullptr;
+    auto it = regions.find(d);
+    if (it != regions.end() && it->second.width == d->width && it->second.height == d->height && it->second.version == d->version)
+      return &it->second;
+    const int w = d->width + 2;
+    const int h = d->height + 2;
+    if (w > largest || h > largest)
+      return nullptr;
+    int x = 0, y = 0;
+    if (it != regions.end() && it->second.width == d->width && it->second.height == d->height)
+    {
+      // Same size, new pixels: written where it already is.
+      x = it->second.x - 1;
+      y = it->second.y - 1;
+    }
+    else
+    {
+      if (width == 0)
+        grow(initial);
+      while (!place(w, h, x, y))
+      {
+        if (width >= largest)
+        {
+          if (emptied)
+            return nullptr;
+          empty();
+          emptied = true;
+          continue;
+        }
+        grow(width * 2);
+      }
+    }
+    // The texels, then the border: each edge row and column copied one texel outward.
+    const auto *src = d->rgba.data();
+    for (int row = -1; row <= d->height; ++row)
+    {
+      const int from_row = std::clamp(row, 0, d->height - 1);
+      auto *line = &pixels[(std::size_t(y + 1 + row) * width + std::size_t(x)) * 4];
+      const auto *source = src + std::size_t(from_row) * d->width * 4;
+      std::memcpy(line, source, 4);
+      std::memcpy(line + 4, source, std::size_t(d->width) * 4);
+      std::memcpy(line + std::size_t(d->width + 1) * 4, source + std::size_t(d->width - 1) * 4, 4);
+    }
+    touched({x, y, w, h});
+    auto &region = regions[d];
+    region = {data, x + 1, y + 1, d->width, d->height, d->version};
+    return &region;
+  }
+};
+
 struct text_engine_t::impl_t
 {
   FT_Library library = nullptr;
@@ -303,6 +451,7 @@ struct text_engine_t::impl_t
   rect_t dirty;
   std::uint64_t generation = 0;
   bool reset = false;
+  image_atlas_t images;
 
   std::unordered_map<glyph_key_t, cached_t, key_hash_t> glyphs;
   std::unordered_map<icon_key_t, cached_t, key_hash_t> icons;
@@ -735,6 +884,30 @@ void text_engine_t::add_heatmap(const heatmap_t &map, float x, float y, std::vec
   out.push_back(prim);
 }
 
+void text_engine_t::add_image(const image_t &image, float x, float y, std::vector<prim_t> &out)
+{
+  auto &impl = *_impl;
+  bool emptied = false;
+  const auto *region = impl.images.find(image.data, emptied);
+  if (emptied)
+    impl.reset = true;
+  if (!region || image.size.width <= 0 || image.size.height <= 0)
+    return;
+  prim_t prim;
+  prim.kind = prim_kind_t::image;
+  prim.x = x;
+  prim.y = y;
+  prim.width = float(image.size.width);
+  prim.height = float(image.size.height);
+  prim.radii[0] = float(region->x);
+  prim.radii[1] = float(region->y);
+  prim.radii[2] = float(region->width);
+  prim.radii[3] = float(region->height);
+  prim.border_width = image.radius;
+  prim.fill = {1, 1, 1, image.opacity};
+  out.push_back(prim);
+}
+
 bool text_engine_t::take_reset() noexcept
 {
   return std::exchange(_impl->reset, false);
@@ -746,9 +919,16 @@ atlas_view_t text_engine_t::atlas() const noexcept
   return {impl.pixels, {impl.width, impl.height}, impl.dirty, impl.generation};
 }
 
+atlas_view_t text_engine_t::images() const noexcept
+{
+  const auto &a = _impl->images;
+  return {a.pixels, {a.width, a.height}, a.dirty, a.generation, 4};
+}
+
 void text_engine_t::clear_dirty() noexcept
 {
   _impl->dirty = {};
+  _impl->images.dirty = {};
 }
 
 std::vector<shaped_glyph_t> text_engine_t::shape(const font_t &font, float pixels, std::string_view text)

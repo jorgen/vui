@@ -138,7 +138,7 @@ PFN_vkGetInstanceProcAddr load_loader()
   X(vkCmdCopyBufferToImage) X(vkCmdBindDescriptorSets) X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkAllocateDescriptorSets)                     \
     X(vkUpdateDescriptorSets) X(vkCmdPipelineBarrier) X(vkCreateSemaphore) X(vkDestroySemaphore) X(vkCreateFence) X(vkDestroyFence) X(vkWaitForFences) X(vkResetFences) X(vkQueueSubmit) X(vkQueueWaitIdle)                \
       X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) X(vkBindBufferMemory) X(vkCreateImage) X(vkDestroyImage) X(vkGetImageMemoryRequirements) X(vkBindImageMemory) X(vkAllocateMemory)              \
-        X(vkFreeMemory) X(vkMapMemory) X(vkUnmapMemory)
+        X(vkFreeMemory) X(vkMapMemory) X(vkUnmapMemory) X(vkCreateSampler) X(vkDestroySampler)
 
 #define VIO_VK_SWAPCHAIN_FUNCTIONS(X)                                                                                                                                                                                      \
   X(vkCreateSwapchainKHR)                                                                                                                                                                                                  \
@@ -517,7 +517,10 @@ public:
   pipeline_t &operator=(const pipeline_t &) = delete;
   ~pipeline_t()
   {
-    destroy_atlas();
+    destroy(_coverage);
+    destroy(_images);
+    if (_sampler)
+      _d.vkDestroySampler(_d.device, _sampler, nullptr);
     if (_descriptors)
       _d.vkDestroyDescriptorPool(_d.device, _descriptors, nullptr);
     if (_set_layout)
@@ -566,16 +569,19 @@ public:
       return false;
     }
 
-    // One descriptor: the glyph atlas, read with OpImageFetch, so a sampled image and no sampler.
-    VkDescriptorSetLayoutBinding binding_info{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // The glyph atlas, read with OpImageFetch and so needing no sampler; the image atlas, sRGB so
+    // that what is sampled is linear; and the bilinear sampler images are read with (G55).
+    const VkDescriptorSetLayoutBinding binding_info[] = {{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                                                         {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                                                         {2, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
     VkDescriptorSetLayoutCreateInfo set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount = 1;
-    set_info.pBindings = &binding_info;
-    VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1};
+    set_info.bindingCount = 3;
+    set_info.pBindings = binding_info;
+    const VkDescriptorPoolSize pool_sizes[] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2}, {VK_DESCRIPTOR_TYPE_SAMPLER, 1}};
     VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool_info.maxSets = 1;
-    pool_info.poolSizeCount = 1;
-    pool_info.pPoolSizes = &pool_size;
+    pool_info.poolSizeCount = 2;
+    pool_info.pPoolSizes = pool_sizes;
     if (_d.vkCreateDescriptorSetLayout(_d.device, &set_info, nullptr, &_set_layout) != VK_SUCCESS || _d.vkCreateDescriptorPool(_d.device, &pool_info, nullptr, &_descriptors) != VK_SUCCESS)
     {
       why = "the atlas descriptor could not be made";
@@ -590,6 +596,31 @@ public:
       why = "vkAllocateDescriptorSets failed";
       return false;
     }
+    VkSamplerCreateInfo sampler_info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sampler_info.magFilter = VK_FILTER_LINEAR;
+    sampler_info.minFilter = VK_FILTER_LINEAR;
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.maxLod = 0;
+    if (_d.vkCreateSampler(_d.device, &sampler_info, nullptr, &_sampler) != VK_SUCCESS)
+    {
+      why = "vkCreateSampler failed";
+      return false;
+    }
+    VkDescriptorImageInfo sampler_image{_sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+    VkWriteDescriptorSet sampler_write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    sampler_write.dstSet = _set;
+    sampler_write.dstBinding = 2;
+    sampler_write.descriptorCount = 1;
+    sampler_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    sampler_write.pImageInfo = &sampler_image;
+    _d.vkUpdateDescriptorSets(_d.device, 1, &sampler_write, 0, nullptr);
+    _coverage.format = VK_FORMAT_R8_UNORM;
+    _coverage.binding = 0;
+    _images.format = VK_FORMAT_R8G8B8A8_SRGB;
+    _images.binding = 1;
 
     VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_t)};
     VkPipelineLayoutCreateInfo layout_info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -713,66 +744,90 @@ public:
     return true;
   }
 
-  // The atlas as the next frame needs it. Called outside a render pass: it records the copy of
-  // what changed, through `staging`, which belongs to the frame and is free once its fence is.
-  bool prepare_atlas(VkCommandBuffer cmd, buffer_t &staging, const atlas_view_t &atlas)
+  // One of the two atlases on the GPU: the glyph atlas (one byte a texel) or the image atlas (four).
+  struct texture_t
   {
-    const bool empty = atlas.extent.width <= 0 || atlas.extent.height <= 0 || atlas.pixels.empty();
-    const VkExtent2D wanted = empty ? VkExtent2D{1, 1} : VkExtent2D{std::uint32_t(atlas.extent.width), std::uint32_t(atlas.extent.height)};
-    bool whole = !_atlas_current || atlas.generation != _atlas_generation;
-    if (!_atlas_image || wanted.width != _atlas_extent.width || wanted.height != _atlas_extent.height)
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    std::uint32_t binding = 0;
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkExtent2D extent{};
+    // In SHADER_READ_ONLY_OPTIMAL, i.e. written at least once.
+    bool ready = false;
+    // Holds generation `generation` with every dirty rectangle since applied.
+    bool current = false;
+    std::uint64_t generation = 0;
+  };
+
+  // What of an atlas the next frame must upload, and from where in the staging buffer.
+  struct upload_t
+  {
+    rect_t region;
+    VkDeviceSize offset = 0;
+    VkDeviceSize bytes = 0;
+    bool empty = false;
+  };
+
+  // The atlas's image as `view` needs it, made again if it grew, and what to upload into it.
+  bool plan(texture_t &t, const atlas_view_t &view, upload_t &up)
+  {
+    up.empty = view.extent.width <= 0 || view.extent.height <= 0 || view.pixels.empty();
+    const VkExtent2D wanted = up.empty ? VkExtent2D{1, 1} : VkExtent2D{std::uint32_t(view.extent.width), std::uint32_t(view.extent.height)};
+    bool whole = !t.current || view.generation != t.generation;
+    if (!t.image || wanted.width != t.extent.width || wanted.height != t.extent.height)
     {
       // Replaced only when it grows, which is rare: waiting for the GPU to finish with the old
       // one is simpler than keeping it alive per frame.
-      if (_atlas_image)
+      if (t.image)
         _d.vkDeviceWaitIdle(_d.device);
-      destroy_atlas();
-      if (!create_atlas(wanted))
+      destroy(t);
+      if (!create(t, wanted))
         return false;
       whole = true;
     }
-    const rect_t region = whole ? rect_t{0, 0, int(wanted.width), int(wanted.height)} : atlas.dirty;
-    if (region.width <= 0 || region.height <= 0)
-      return true;
+    up.region = whole ? rect_t{0, 0, int(wanted.width), int(wanted.height)} : view.dirty;
+    up.bytes = up.region.width > 0 && up.region.height > 0 ? VkDeviceSize(up.region.width) * up.region.height * std::max(view.bytes_per_texel, 1) : 0;
+    return true;
+  }
 
-    const VkDeviceSize bytes = VkDeviceSize(region.width) * region.height;
-    if (staging.capacity < bytes)
-    {
-      release(_d, staging);
-      VkDeviceSize capacity = 64 * 1024;
-      while (capacity < bytes)
-        capacity *= 2;
-      if (!make_buffer(_d, staging, capacity, VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
-        return false;
-    }
-    auto *out = static_cast<std::uint8_t *>(staging.mapped);
-    if (empty)
-      std::memset(out, 0, std::size_t(bytes));
+  // Records the copy of what changed, through `staging`, which belongs to the frame and is free once
+  // its fence is. Called outside a render pass.
+  void upload(texture_t &t, VkCommandBuffer cmd, buffer_t &staging, const atlas_view_t &view, const upload_t &up)
+  {
+    if (up.bytes == 0)
+      return;
+    const auto texel = std::size_t(std::max(view.bytes_per_texel, 1));
+    auto *out = static_cast<std::uint8_t *>(staging.mapped) + up.offset;
+    const auto &region = up.region;
+    if (up.empty)
+      std::memset(out, 0, std::size_t(up.bytes));
     else
     {
       for (int row = 0; row < region.height; ++row)
-        std::memcpy(out + std::size_t(row) * region.width, &atlas.pixels[std::size_t(region.y + row) * atlas.extent.width + region.x], std::size_t(region.width));
+        std::memcpy(out + std::size_t(row) * region.width * texel, &view.pixels[(std::size_t(region.y + row) * view.extent.width + region.x) * texel], std::size_t(region.width) * texel);
     }
 
     VkImageMemoryBarrier to_copy{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    to_copy.oldLayout = _atlas_ready ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    to_copy.oldLayout = t.ready ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
     to_copy.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     to_copy.srcAccessMask = 0;
     to_copy.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     to_copy.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     to_copy.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_copy.image = _atlas_image;
+    to_copy.image = t.image;
     to_copy.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     // The previous frame may still be reading it: a barrier's first scope is everything submitted
     // to this queue before it, so waiting on the fragment stage covers that frame too.
-    const VkPipelineStageFlags after = _atlas_ready ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    const VkPipelineStageFlags after = t.ready ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     _d.vkCmdPipelineBarrier(cmd, after, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &to_copy);
     VkBufferImageCopy copy{};
+    copy.bufferOffset = up.offset;
     copy.bufferRowLength = std::uint32_t(region.width);
     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     copy.imageOffset = {region.x, region.y, 0};
     copy.imageExtent = {std::uint32_t(region.width), std::uint32_t(region.height), 1};
-    _d.vkCmdCopyBufferToImage(cmd, staging.buffer, _atlas_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    _d.vkCmdCopyBufferToImage(cmd, staging.buffer, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     VkImageMemoryBarrier to_read = to_copy;
     to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -783,23 +838,47 @@ public:
     // frame's fragments read it. Waiting on all commands, waiting for idle, or aligning the copy
     // each fixed it; this costs nothing measurable, since it runs only on frames that upload (G39).
     _d.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &to_read);
-    _atlas_ready = true;
-    _atlas_current = true;
-    _atlas_generation = atlas.generation;
+    t.ready = true;
+    t.current = true;
+    t.generation = view.generation;
+  }
+
+  // Both atlases as the next frame needs them, through one staging buffer: each upload has its own
+  // part of it, since both copies run after everything is written.
+  bool prepare_atlases(VkCommandBuffer cmd, buffer_t &staging, const display_list_t &list)
+  {
+    upload_t coverage, images;
+    if (!plan(_coverage, list.atlas, coverage) || !plan(_images, list.images, images))
+      return false;
+    // The image part starts on a 16-byte boundary, which suits every texel size a copy can have.
+    images.offset = (coverage.bytes + 15) & ~VkDeviceSize(15);
+    const VkDeviceSize bytes = images.offset + images.bytes;
+    if (bytes > 0 && staging.capacity < bytes)
+    {
+      release(_d, staging);
+      VkDeviceSize capacity = 64 * 1024;
+      while (capacity < bytes)
+        capacity *= 2;
+      if (!make_buffer(_d, staging, capacity, VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
+        return false;
+    }
+    upload(_coverage, cmd, staging, list.atlas, coverage);
+    upload(_images, cmd, staging, list.images, images);
     return true;
   }
 
-  // A frame was skipped, so a dirty rectangle went by unseen: upload the whole atlas next time.
+  // A frame was skipped, so a dirty rectangle went by unseen: upload the whole atlases next time.
   void forget_atlas() noexcept
   {
-    _atlas_current = false;
+    _coverage.current = false;
+    _images.current = false;
   }
 
   // Record one frame: the atlas's changes, a clear, then one instanced draw per run with the run's
   // origin pushed.
   bool record(VkCommandBuffer cmd, VkFramebuffer framebuffer, VkExtent2D extent, const buffer_t &prims, buffer_t &staging, const display_list_t &list, bool encode_srgb)
   {
-    if (!prepare_atlas(cmd, staging, list.atlas))
+    if (!prepare_atlases(cmd, staging, list))
       return false;
     const auto &bg = list.background;
     VkClearValue clear{};
@@ -869,11 +948,11 @@ public:
   }
 
 private:
-  bool create_atlas(VkExtent2D extent)
+  bool create(texture_t &t, VkExtent2D extent)
   {
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_2D;
-    info.format = VK_FORMAT_R8_UNORM;
+    info.format = t.format;
     info.extent = {extent.width, extent.height, 1};
     info.mipLevels = 1;
     info.arrayLayers = 1;
@@ -881,52 +960,52 @@ private:
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (_d.vkCreateImage(_d.device, &info, nullptr, &_atlas_image) != VK_SUCCESS)
+    if (_d.vkCreateImage(_d.device, &info, nullptr, &t.image) != VK_SUCCESS)
       return false;
     VkMemoryRequirements requirements;
-    _d.vkGetImageMemoryRequirements(_d.device, _atlas_image, &requirements);
+    _d.vkGetImageMemoryRequirements(_d.device, t.image, &requirements);
     auto type = _d.memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (!type)
       type = _d.memory_type(requirements.memoryTypeBits, 0);
     VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     allocate.allocationSize = requirements.size;
     allocate.memoryTypeIndex = type.value_or(0);
-    if (!type || _d.vkAllocateMemory(_d.device, &allocate, nullptr, &_atlas_memory) != VK_SUCCESS)
+    if (!type || _d.vkAllocateMemory(_d.device, &allocate, nullptr, &t.memory) != VK_SUCCESS)
       return false;
-    _d.vkBindImageMemory(_d.device, _atlas_image, _atlas_memory, 0);
+    _d.vkBindImageMemory(_d.device, t.image, t.memory, 0);
     VkImageViewCreateInfo view_info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    view_info.image = _atlas_image;
+    view_info.image = t.image;
     view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    view_info.format = VK_FORMAT_R8_UNORM;
+    view_info.format = t.format;
     view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (_d.vkCreateImageView(_d.device, &view_info, nullptr, &_atlas_view) != VK_SUCCESS)
+    if (_d.vkCreateImageView(_d.device, &view_info, nullptr, &t.view) != VK_SUCCESS)
       return false;
-    VkDescriptorImageInfo image_info{VK_NULL_HANDLE, _atlas_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo image_info{VK_NULL_HANDLE, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     write.dstSet = _set;
-    write.dstBinding = 0;
+    write.dstBinding = t.binding;
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     write.pImageInfo = &image_info;
     _d.vkUpdateDescriptorSets(_d.device, 1, &write, 0, nullptr);
-    _atlas_extent = extent;
-    _atlas_ready = false;
+    t.extent = extent;
+    t.ready = false;
     return true;
   }
 
-  void destroy_atlas()
+  void destroy(texture_t &t)
   {
-    if (_atlas_view)
-      _d.vkDestroyImageView(_d.device, _atlas_view, nullptr);
-    if (_atlas_image)
-      _d.vkDestroyImage(_d.device, _atlas_image, nullptr);
-    if (_atlas_memory)
-      _d.vkFreeMemory(_d.device, _atlas_memory, nullptr);
-    _atlas_view = VK_NULL_HANDLE;
-    _atlas_image = VK_NULL_HANDLE;
-    _atlas_memory = VK_NULL_HANDLE;
-    _atlas_extent = {};
-    _atlas_ready = false;
+    if (t.view)
+      _d.vkDestroyImageView(_d.device, t.view, nullptr);
+    if (t.image)
+      _d.vkDestroyImage(_d.device, t.image, nullptr);
+    if (t.memory)
+      _d.vkFreeMemory(_d.device, t.memory, nullptr);
+    t.view = VK_NULL_HANDLE;
+    t.image = VK_NULL_HANDLE;
+    t.memory = VK_NULL_HANDLE;
+    t.extent = {};
+    t.ready = false;
   }
 
   // The name in the module's first OpEntryPoint: glslang writes "main", slangc may keep the
@@ -955,15 +1034,9 @@ private:
   VkDescriptorSetLayout _set_layout = VK_NULL_HANDLE;
   VkDescriptorPool _descriptors = VK_NULL_HANDLE;
   VkDescriptorSet _set = VK_NULL_HANDLE;
-  VkImage _atlas_image = VK_NULL_HANDLE;
-  VkDeviceMemory _atlas_memory = VK_NULL_HANDLE;
-  VkImageView _atlas_view = VK_NULL_HANDLE;
-  VkExtent2D _atlas_extent{};
-  // In SHADER_READ_ONLY_OPTIMAL, i.e. written at least once.
-  bool _atlas_ready = false;
-  // Holds generation `_atlas_generation` with every dirty rectangle since applied.
-  bool _atlas_current = false;
-  std::uint64_t _atlas_generation = 0;
+  VkSampler _sampler = VK_NULL_HANDLE;
+  texture_t _coverage;
+  texture_t _images;
 };
 
 bool is_srgb(VkFormat format)

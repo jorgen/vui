@@ -419,9 +419,19 @@ public:
   {
     return _field;
   }
+  [[nodiscard]] pressable_t &field() noexcept
+  {
+    return _field;
+  }
   [[nodiscard]] std::size_t caret() const noexcept
   {
     return _editor.caret.byte;
+  }
+  // Select the whole text when it is next shown, so that typing or pasting replaces it: a field that
+  // opens holding a value to change.
+  void select_all() noexcept
+  {
+    _select_all = true;
   }
 
 private:
@@ -431,6 +441,7 @@ private:
   // The text as edited since the last view. That view put it back to the props, so an edit the
   // parent never applied is undone there.
   mutable detail::text_editor_t _editor{false};
+  mutable bool _select_all = false;
   float _scroll = 0;
 };
 

@@ -474,6 +474,7 @@ public:
       _popup_items.emplace_back(first, _items.size());
     }
     update_bounds();
+    take_focus_request();
     _stats.display_list = clock::now() - emitting;
     _stats.prims = _prims.size();
     _stats.runs = _runs.size();
@@ -489,7 +490,7 @@ public:
 
   [[nodiscard]] display_list_t display_list() const noexcept
   {
-    return {_prims, _runs, _config.background, _logical, _framebuffer, _scale, _text.atlas()};
+    return {_prims, _runs, _config.background, _logical, _framebuffer, _scale, _text.atlas(), _text.images()};
   }
 
   // ---- input. Pointer positions arrive in the window system's units (G9) and are kept in layout
@@ -736,6 +737,7 @@ public:
     _runs.clear();
     _hovered = nullptr;
     _focused = nullptr;
+    _focus_request = nullptr;
     _held = {};
     for (auto *slot : leaving)
       unmount(*slot, {});
@@ -763,6 +765,30 @@ public:
   [[nodiscard]] drained_awaitable_t drained() noexcept
   {
     return {*this};
+  }
+
+  void request_focus(const pressable_t *source) noexcept
+  {
+    _focus_request = source;
+    _focus_request_frames = 0;
+    take_focus_request();
+    if (_focus_request)
+      wake_frame();
+  }
+
+  // A requested focus lands once a box showing it is in the hit-test list, and is given up after a
+  // few frames without one: whatever asked has changed its mind.
+  void take_focus_request() noexcept
+  {
+    if (!_focus_request)
+      return;
+    if (owner_of(_focus_request))
+    {
+      set_focus(std::exchange(_focus_request, nullptr), true);
+      return;
+    }
+    if (++_focus_request_frames > 3)
+      _focus_request = nullptr;
   }
 
   void invalidate_component(void *component, node_t (*view)(const void *)) noexcept
@@ -1034,6 +1060,12 @@ private:
       _text.add_heatmap(*map, x, y, _glyphs);
       place_glyphs(slot);
       return {map->size};
+    }
+    if (const auto *image = std::get_if<image_t>(&node))
+    {
+      _text.add_image(*image, x, y, _glyphs);
+      place_glyphs(slot);
+      return {image->size};
     }
     if (const auto *spacer = std::get_if<spacer_t>(&node))
       return {{std::max(spacer->size.width, want.width), std::max(spacer->size.height, want.height)}};
@@ -1796,6 +1828,8 @@ private:
   const pressable_t *_hovered = nullptr;
   target_t _held;
   const pressable_t *_focused = nullptr;
+  const pressable_t *_focus_request = nullptr;
+  int _focus_request_frames = 0;
   const pressable_t *_click_source = nullptr;
   std::chrono::steady_clock::time_point _click_time;
   point_t _click_at;
@@ -2039,6 +2073,11 @@ void ready(runtime_t &runtime, waiter_t &waiter) noexcept
 void invalidate_component(runtime_t &runtime, void *component, node_t (*view)(const void *)) noexcept
 {
   runtime.invalidate_component(component, view);
+}
+
+void request_focus(runtime_t &runtime, const pressable_t *source) noexcept
+{
+  runtime.request_focus(source);
 }
 
 bool scope_cancelled(const scope_t &scope) noexcept

@@ -24,6 +24,7 @@ Copyright (c) 2026 Jørgen Lind
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -39,6 +40,7 @@ Copyright (c) 2026 Jørgen Lind
 
 #include "gui_test_helpers.h"
 #include "ui_renderer.h"
+#include "ui_text.h"
 
 using namespace std::chrono_literals;
 namespace ui = vui::ui;
@@ -456,4 +458,115 @@ TEST_CASE("vulkan: the UI pipeline draws rounded corners, borders and shadows")
   CHECK(edge[0] < 255);
   // Far from everything: background.
   CHECK(matches(pixel(*image, 50, 95), white));
+}
+
+TEST_CASE("ui image: pixels go into the image atlas with a border of their own edge, once per version")
+{
+  ui::detail::text_engine_t engine;
+  auto data = std::make_shared<ui::image_data_t>();
+  data->width = 2;
+  data->height = 1;
+  data->rgba = {255, 0, 0, 255, 0, 0, 255, 255};
+  std::vector<ui::prim_t> prims;
+  engine.add_image({.size = {20, 10}, .data = data, .radius = 3, .opacity = 0.5f}, 4, 6, prims);
+  REQUIRE(prims.size() == 1);
+  const auto &p = prims[0];
+  CHECK(p.kind == ui::prim_kind_t::image);
+  CHECK(p.x == 4);
+  CHECK(p.width == 20);
+  CHECK(p.radii[2] == 2);
+  CHECK(p.radii[3] == 1);
+  CHECK(p.border_width == 3);
+  CHECK(p.fill.a == 0.5f);
+  const auto atlas = engine.images();
+  CHECK(atlas.bytes_per_texel == 4);
+  const auto at = [&](int x, int y) { return &atlas.pixels[(std::size_t(y) * atlas.extent.width + std::size_t(x)) * 4]; };
+  const int x0 = int(p.radii[0]);
+  const int y0 = int(p.radii[1]);
+  CHECK(at(x0, y0)[0] == 255);
+  CHECK(at(x0 + 1, y0)[2] == 255);
+  // The border repeats the edge: red to the left and above, blue to the right and below.
+  CHECK(at(x0 - 1, y0 - 1)[0] == 255);
+  CHECK(at(x0 + 2, y0 + 1)[2] == 255);
+  // The same data is found where it is; a new version is written over it in place.
+  prims.clear();
+  engine.add_image({.size = {20, 10}, .data = data}, 0, 0, prims);
+  CHECK(prims[0].radii[0] == p.radii[0]);
+  data->rgba[0] = 0;
+  data->rgba[1] = 255;
+  ++data->version;
+  prims.clear();
+  engine.add_image({.size = {20, 10}, .data = data}, 0, 0, prims);
+  CHECK(prims[0].radii[0] == p.radii[0]);
+  CHECK(engine.images().pixels[(std::size_t(y0) * atlas.extent.width + std::size_t(x0)) * 4 + 1] == 255);
+  CHECK_FALSE(engine.take_reset());
+}
+
+TEST_CASE("vulkan: an image is sampled from the image atlas, rounded and faded as asked")
+{
+  // A 4x4 image of four 2x2 quadrants, in a 6x6 atlas with the border the engine would give it.
+  const std::array<std::array<std::uint8_t, 4>, 4> colours{{{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 0, 255}}};
+  std::vector<std::uint8_t> atlas(6 * 6 * 4);
+  for (int y = 0; y < 6; ++y)
+  {
+    for (int x = 0; x < 6; ++x)
+    {
+      const int ix = std::clamp(x - 1, 0, 3);
+      const int iy = std::clamp(y - 1, 0, 3);
+      const auto &c = colours[std::size_t((iy / 2) * 2 + ix / 2)];
+      std::copy(c.begin(), c.end(), atlas.begin() + (std::ptrdiff_t(y) * 6 + x) * 4);
+    }
+  }
+  // At scale 2: a 40x40-unit image at (5, 5) is 80x80 pixels from (10, 10), with 8-unit corners;
+  // and a faded copy of it at (50, 5), 20x20.
+  std::vector<ui::prim_t> prims(2);
+  for (auto &p : prims)
+  {
+    p.kind = ui::prim_kind_t::image;
+    p.radii[0] = 1;
+    p.radii[1] = 1;
+    p.radii[2] = 4;
+    p.radii[3] = 4;
+  }
+  prims[0].x = 5;
+  prims[0].y = 5;
+  prims[0].width = 40;
+  prims[0].height = 40;
+  prims[0].border_width = 8;
+  prims[0].fill = {1, 1, 1, 1};
+  prims[1].x = 50;
+  prims[1].y = 5;
+  prims[1].width = 20;
+  prims[1].height = 20;
+  prims[1].fill = {1, 1, 1, 0.5f};
+  const std::vector<ui::run_t> runs{{0, 2, 0, 0}};
+  ui::display_list_t list;
+  list.prims = prims;
+  list.runs = runs;
+  list.background = {1, 1, 1, 1};
+  list.logical = {75, 50};
+  list.framebuffer = {150, 100};
+  list.scale = 2;
+  list.images = {atlas, {6, 6}, {0, 0, 6, 6}, 1, 4};
+
+  std::string why;
+  auto image = ui::detail::render_offscreen_vulkan(list, why);
+  if (!image)
+  {
+    MESSAGE("no Vulkan here, skipped: " << why);
+    return;
+  }
+  // Each quadrant's middle is its own colour.
+  CHECK(matches(pixel(*image, 30, 30), {255, 0, 0, 255}));
+  CHECK(matches(pixel(*image, 70, 30), {0, 255, 0, 255}));
+  CHECK(matches(pixel(*image, 30, 70), {0, 0, 255, 255}));
+  CHECK(matches(pixel(*image, 70, 70), {255, 255, 0, 255}));
+  // The rounded corner leaves the background; just inside the straight edge is the image.
+  CHECK(matches(pixel(*image, 11, 11), {255, 255, 255, 255}));
+  CHECK(matches(pixel(*image, 30, 11), {255, 0, 0, 255}, 40));
+  // Half opacity over white: red becomes pink, lighter than red, never white.
+  const auto faded = pixel(*image, 105, 15);
+  CHECK(faded[0] > 240);
+  CHECK(faded[1] > 100);
+  CHECK(faded[1] < 230);
 }

@@ -68,12 +68,16 @@ public:
   // A heatmap's values, quantized into the atlas -- again only when its data or range changed --
   // and the prim that draws them.
   void add_heatmap(const heatmap_t &map, float x, float y, std::vector<prim_t> &out);
+  // An image's pixels, in the image atlas -- uploaded when its data or version is new -- and the
+  // prim that draws them (G55).
+  void add_image(const image_t &image, float x, float y, std::vector<prim_t> &out);
 
   // True once after the atlas filled at its largest size and was emptied: prims made before that
   // name rectangles that are gone, so the caller lays everything out again.
   bool take_reset() noexcept;
 
   [[nodiscard]] atlas_view_t atlas() const noexcept;
+  [[nodiscard]] atlas_view_t images() const noexcept;
   // The renderer has the atlas as it stands; start a new dirty rectangle.
   void clear_dirty() noexcept;
 

@@ -65,6 +65,15 @@ struct native_window_t
   std::uint32_t visual = 0;
 };
 
+// The colours of the frame the system draws round a window: its title bar and border (G58).
+// `system` follows the user's light or dark app mode, and changes when they do.
+enum class frame_theme_t : std::uint8_t
+{
+  system,
+  light,
+  dark,
+};
+
 struct window_config_t
 {
   std::string title = "vio";
@@ -76,6 +85,9 @@ struct window_config_t
   bool decorated = true;
   bool transparent = false;
   bool fullscreen = false;
+  // Windows only: macOS follows the system appearance itself, and on Linux the window manager or
+  // compositor draws the frame.
+  frame_theme_t frame_theme = frame_theme_t::system;
 };
 
 struct display_config_t

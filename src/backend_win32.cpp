@@ -45,6 +45,8 @@ Copyright (c) 2026 Jørgen Lind
 #include <windows.h>
 #include <windowsx.h>
 
+#include <dwmapi.h>
+
 namespace vui::detail
 {
 namespace
@@ -392,6 +394,8 @@ private:
   extent_t _max_size;
   DWORD _style = 0;
   DWORD _ex_style = 0;
+  frame_theme_t _frame_theme = frame_theme_t::system;
+  void apply_frame_theme();
   RECT _windowed{};
   DWORD _windowed_style = 0;
   cursor_t _cursor = cursor_t::arrow;
@@ -591,6 +595,8 @@ int win32_window_t::create(const window_config_t &config)
   CreateWindowExW(_ex_style, window_class, title.c_str(), _style, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, GetModuleHandleW(nullptr), this);
   if (!handle)
     return vio::errc::out_of_memory;
+  _frame_theme = config.frame_theme;
+  apply_frame_theme();
   const float factor = scale();
   if (factor != 1.0f)
   {
@@ -606,6 +612,26 @@ int win32_window_t::create(const window_config_t &config)
     _window.on_visible(true);
   }
   return 0;
+}
+
+// Whether the user has Windows' apps set to dark: "Choose your app mode" in the colour settings.
+static bool apps_use_dark() noexcept
+{
+  DWORD light = 1;
+  DWORD size = sizeof light;
+  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &light, &size) != ERROR_SUCCESS)
+    return false;
+  return light == 0;
+}
+
+// A dark title bar is asked of DWM; the attribute is 20 from Windows 10 20H1 and was 19 before it.
+// Asked again when the user changes the app mode, and the frame is redrawn for it (G58).
+void win32_window_t::apply_frame_theme()
+{
+  const BOOL dark = _frame_theme == frame_theme_t::dark || (_frame_theme == frame_theme_t::system && apps_use_dark());
+  if (FAILED(DwmSetWindowAttribute(handle, 20, &dark, sizeof dark)))
+    DwmSetWindowAttribute(handle, 19, &dark, sizeof dark);
+  SetWindowPos(handle, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 }
 
 void win32_window_t::report_size()
@@ -684,6 +710,10 @@ LRESULT win32_window_t::procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM
   }
   case WM_ERASEBKGND:
     return 1;
+  case WM_SETTINGCHANGE:
+    if (_frame_theme == frame_theme_t::system && lparam && lstrcmpW(reinterpret_cast<LPCWSTR>(lparam), L"ImmersiveColorSet") == 0)
+      apply_frame_theme();
+    break;
   case WM_ENTERSIZEMOVE:
   case WM_ENTERMENULOOP:
     thread.enter_modal();

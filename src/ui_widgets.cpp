@@ -904,6 +904,8 @@ node_t line_edit_t::view() const
     _editor.lines.assign(1, props.text);
     _editor.clamp();
   }
+  if (std::exchange(_select_all, false))
+    _editor.select_all();
   const auto m = mono_metrics(t.mono_size);
   const auto &line = _editor.lines.front();
   const float width = float(std::max(props.columns, 1)) * m.advance;
