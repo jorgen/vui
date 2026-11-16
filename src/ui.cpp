@@ -522,6 +522,39 @@ public:
     }
   }
 
+  // The right button goes to the topmost pressable under the pointer with a context subscriber. A
+  // popup keeps it, as it keeps presses: nothing under a menu opens another.
+  void context(point_t position, modifier_t modifiers)
+  {
+    _pointer = position;
+    _has_pointer = true;
+    hover(position);
+    std::size_t floor = 0;
+    bool landed = false;
+    for (std::size_t i = _items.size(); i-- > floor;)
+    {
+      const auto &item = _items[i];
+      const auto *source = item.box->events.source;
+      if (!source || !item.rect.contains(position))
+        continue;
+      auto &contexts = static_cast<detail::source_t<context_event_t> &>(*const_cast<pressable_t *>(source));
+      if (contexts.subscribed())
+      {
+        contexts.emit(context_event_t{source, position, modifiers}, *this);
+        return;
+      }
+      if (!landed)
+      {
+        landed = true;
+        for (const auto &[first, last] : _popup_items)
+        {
+          if (i >= first && i < last)
+            floor = first;
+        }
+      }
+    }
+  }
+
   // Typed text goes to the focused pressable if it is a text input, in one queue with its keys.
   void text(const text_event_t &event)
   {
@@ -543,6 +576,11 @@ public:
   }
   void button(const pointer_button_event_t &event)
   {
+    if (event.button == button_t::right && event.pressed)
+    {
+      context(to_logical(event.position), event.modifiers);
+      return;
+    }
     if (event.button != button_t::left)
       return;
     const auto position = to_logical(event.position);

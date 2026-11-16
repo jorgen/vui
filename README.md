@@ -40,6 +40,9 @@ no second loop to hand work across and nothing to lock.
   <img alt="vui_task_manager: live CPU charts with a crosshair readout, per-core charts and memory" src="docs/task_manager.png" width="80%">
 </p>
 <p align="center">
+  <img alt="vui_explorer: a file explorer with a context menu listing the applications that open the file" src="docs/explorer.png" width="80%">
+</p>
+<p align="center">
   <img alt="vui_ui_text: line edits, a notes pane and a scrolling log" src="docs/text.png" width="62%">
 </p>
 
@@ -180,6 +183,7 @@ cmake -B build -DCMDEP_SOURCE_DIR_VIO=/path/to/vio
 | `vui_ui_chips` | 200,000 chips, the stress test |
 | `vui_ui_widgets` | the widget set |
 | `vui_ui_text` | labels, line edits, a notes pane and a log fed by a timer |
+| `vui_explorer` | a file explorer: folders that open at once and fill in as they are read, natural sorting, filtering and type-ahead, a context menu with the applications that open the file, previews, on Windows, Linux and macOS |
 | `vui_task_manager` | the advanced one: live CPU, per-core and memory charts, a sortable, filterable process table and an activity log, fed by a sampling thread on Windows, Linux and macOS |
 | `vui_vulkan_clear`, `vui_d3d12_clear`, `vui_metal_clear` | bring your own renderer |
 

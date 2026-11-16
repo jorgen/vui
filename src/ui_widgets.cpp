@@ -333,6 +333,110 @@ behaviour_t combobox_t::behave(scope_t &scope)
   }
 }
 
+// ---- context menu (G53)
+
+bool context_menu_t::choosable(std::size_t index) const noexcept
+{
+  return index < props.items.size() && index < max_items && props.items[index].kind == menu_item_t::kind_t::item && props.items[index].enabled;
+}
+
+node_t context_menu_t::view() const
+{
+  const auto &t = theme();
+  column_t list{.align = align_t::stretch};
+  const auto n = std::min(props.items.size(), max_items);
+  for (std::size_t i = 0; i < n; ++i)
+  {
+    const auto &item = props.items[i];
+    if (item.kind == menu_item_t::kind_t::separator)
+    {
+      list.children.push_back(box_t{.color = clear, .padding = {8, 4}, .align_x = align_t::stretch, .children = {box_t{.size = {0, 1}, .color = t.border}}});
+      continue;
+    }
+    if (item.kind == menu_item_t::kind_t::header)
+    {
+      list.children.push_back(box_t{.color = clear, .padding = {12, 6, 12, 2}, .align_x = align_t::start, .children = {text_t{.text = item.label, .size = t.text_size - 2, .color = t.text_muted}}});
+      continue;
+    }
+    const bool lit = int(i) == _highlight && item.enabled;
+    const bool hovered = _rows[i].hovered() && item.enabled;
+    const color_t ink = !item.enabled ? t.text_disabled : (lit ? white : t.text);
+    row_t line{.align = align_t::center, .children = {text_t{.text = item.label, .size = t.text_size, .color = ink}, spacer_t{.grow = 1, .size = {24, 0}}}};
+    if (!item.detail.empty())
+      line.children.push_back(text_t{.text = item.detail, .size = t.text_size - 1, .color = lit ? white : t.text_muted});
+    list.children.push_back(box_t{.color = lit ? t.accent : (hovered ? t.control_hovered : clear),
+                                  .radius = 4,
+                                  .events = item.enabled ? event_ref_t(_rows[i]) : event_ref_t{},
+                                  .padding = {12, 5},
+                                  .align_x = align_t::stretch,
+                                  .children = {std::move(line)}});
+  }
+  return box_t{.size = {200, 0},
+               .color = t.menu,
+               .radius = t.radius,
+               .border_width = 1,
+               .border_color = t.border,
+               .shadow = {.x = 0, .y = 4, .blur = 12, .color = {0, 0, 0, 0.55f}},
+               .padding = {4, 4},
+               .align_x = align_t::stretch,
+               .children = {std::move(list)}};
+}
+
+behaviour_t context_menu_t::behave(scope_t &scope)
+{
+  // Opened afresh: nothing is lit until a key asks.
+  _highlight = -1;
+  auto presses = subscribe<press_event_t>(_rows);
+  while (auto press = co_await presses)
+  {
+    const auto index = std::size_t(press->source - &_rows[0]);
+    if (choosable(index))
+      emit(chosen, menu_choice_t{this, index}, scope);
+  }
+}
+
+bool context_menu_t::key(const key_event_t &event, scope_t &scope)
+{
+  if (!event.pressed)
+    return false;
+  const int n = int(std::min(props.items.size(), max_items));
+  const auto step = [&](int from, int by)
+  {
+    for (int i = from + by; i >= 0 && i < n; i += by)
+    {
+      if (choosable(std::size_t(i)))
+        return i;
+    }
+    return from;
+  };
+  const int before = _highlight;
+  switch (event.key)
+  {
+  case key_t::down:
+    _highlight = step(_highlight, 1);
+    break;
+  case key_t::up:
+    _highlight = _highlight < 0 ? step(n, -1) : step(_highlight, -1);
+    break;
+  case key_t::home:
+    _highlight = step(-1, 1);
+    break;
+  case key_t::end:
+    _highlight = step(n, -1);
+    break;
+  case key_t::enter:
+  case key_t::keypad_enter:
+    if (_highlight >= 0 && choosable(std::size_t(_highlight)))
+      emit(chosen, menu_choice_t{this, std::size_t(_highlight)}, scope);
+    return true;
+  default:
+    return false;
+  }
+  if (_highlight != before)
+    invalidate(scope, *this);
+  return true;
+}
+
 // ---- text (G50)
 
 namespace

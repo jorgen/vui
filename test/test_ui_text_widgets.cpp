@@ -519,3 +519,127 @@ TEST_CASE("ui press: a pressable nothing listens to for presses lets the press t
           CHECK(root.card_presses == 1);
         });
 }
+
+TEST_CASE("ui context: the right button goes to the topmost pressable with a context subscriber")
+{
+  struct root_t
+  {
+    ui::pressable_t list;
+    ui::pressable_t row;
+    std::vector<ui::context_event_t> seen;
+
+    ui::node_t view() const
+    {
+      // The row only tracks the pointer, so the list under it takes the right button.
+      return ui::column_t{.padding = 10,
+                          .children = {ui::box_t{.size = {200, 100}, .color = {0.2f, 0.2f, 0.2f, 1}, .events = list, .children = {ui::box_t{.size = {100, 30}, .color = {0, 0, 1, 1}, .events = row}}}}};
+    }
+    ui::behaviour_t behave(ui::scope_t &scope)
+    {
+      auto menus = ui::subscribe<ui::context_event_t>(list);
+      auto moves = ui::subscribe<ui::hover_event_t>(row);
+      auto events = ui::merge(scope, menus, moves);
+      while (auto event = co_await events)
+      {
+        if (event->index() == 0)
+          seen.push_back(std::get<0>(*event));
+      }
+    }
+  } root;
+  frame_t frame;
+  drive(root, frame,
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          const auto row = rect_of(frame, &root.row);
+          const vui::point_t at{row.x + 20.0, row.y + 10.0};
+          window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::right, true, at});
+          window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::right, false, at});
+          co_await settle(loop);
+          REQUIRE(root.seen.size() == 1);
+          CHECK(root.seen[0].source == &root.list);
+          CHECK(root.seen[0].position == at);
+          // A left click is not a context event.
+          click(window, at);
+          co_await settle(loop);
+          CHECK(root.seen.size() == 1);
+        });
+}
+
+TEST_CASE("ui context menu: opens where placed, chooses by pointer and keyboard, and is dismissed outside")
+{
+  struct root_t
+  {
+    ui::context_menu_t menu;
+    ui::pressable_t keys{ui::focusable};
+    bool open = true;
+    std::vector<std::size_t> chosen;
+    int dismissed = 0;
+
+    ui::node_t view() const
+    {
+      ui::box_t page{.size = {400, 300}, .color = {0, 0, 0, 0}, .events = keys, .align_x = ui::align_t::start, .align_y = ui::align_t::start};
+      if (open)
+        page.children.push_back(ui::at_t{.x = 50,
+                                         .y = 40,
+                                         .children = {ui::mount(menu, {.items = {{.label = "Open"},
+                                                                                 {.kind = ui::menu_item_t::kind_t::separator},
+                                                                                 {.label = "Open with", .kind = ui::menu_item_t::kind_t::header},
+                                                                                 {.label = "Unavailable", .enabled = false},
+                                                                                 {.label = "Notepad", .detail = "default"}}})
+                                                        .on_top(menu.dismiss)}});
+      return page;
+    }
+    ui::behaviour_t behave(ui::scope_t &scope)
+    {
+      auto choices = ui::subscribe<ui::menu_choice_t>(menu.chosen);
+      auto outside = ui::subscribe<ui::press_event_t>(menu.dismiss);
+      auto typed = ui::subscribe<vui::key_event_t>(keys);
+      auto events = ui::merge(scope, choices, outside, typed);
+      while (auto event = co_await events)
+      {
+        if (event->index() == 0)
+          chosen.push_back(std::get<0>(*event).index);
+        else if (event->index() == 1)
+        {
+          ++dismissed;
+          open = false;
+        }
+        else
+          menu.key(std::get<2>(*event), scope);
+      }
+    }
+  } root;
+  frame_t frame;
+  drive(root, frame,
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          // Rows that can be chosen report to their own pressables; the header, the rule and the
+          // disabled row report to nothing.
+          std::vector<ui::rect_t> rows;
+          for (const auto &s : frame.items)
+          {
+            if (s.source && s.source != &root.keys && s.source != &root.menu.dismiss)
+              rows.push_back(s.rect);
+          }
+          REQUIRE(rows.size() == 2);
+          CHECK(rows[0].x >= 50);
+          CHECK(rows[0].y >= 40);
+          click(window, {rows[1].x + 10.0, rows[1].y + 5.0});
+          co_await settle(loop);
+          REQUIRE(root.chosen.size() == 1);
+          CHECK(root.chosen[0] == 4);
+          // From the keyboard, handed over by the parent: Down lands on Open, Down again skips the
+          // rule, the header and the disabled row.
+          key(window, vui::key_t::tab);
+          key(window, vui::key_t::down);
+          key(window, vui::key_t::down);
+          key(window, vui::key_t::enter);
+          co_await settle(loop);
+          REQUIRE(root.chosen.size() == 2);
+          CHECK(root.chosen[1] == 4);
+          click(window, {380, 280});
+          co_await settle(loop);
+          CHECK(root.dismissed == 1);
+          CHECK_FALSE(root.open);
+        });
+}

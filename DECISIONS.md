@@ -749,3 +749,42 @@ A pressable that only tracks the pointer, or only measures itself, is transparen
 One limit, which the popup test caught at once: a press that lands in a popup stays in it. Falling
 through may reach another box of the same popup but never its dismissing backdrop, or a press on a
 menu's own unclaimed area would close the menu.
+
+## G53. Context menus, and an explorer that opens a folder at once
+
+The second advanced example, `examples/explorer/`, is a file explorer. It needed two things from
+the toolkit and one rule from the user: opening a folder must be fast, and must not wait for the
+folder to be read to the end.
+
+- **`context_event_t`**: the right button, sent to the topmost pressable under the pointer that has
+  a context subscriber -- the rule presses (G52) and the wheel follow -- and kept inside a popup,
+  so nothing under an open menu opens another.
+- **`context_menu_t`**: items, separators, headers and disabled items, shown by the parent as a
+  popup at the pointer and closed on `chosen` or a press on `dismiss`. It does not take focus from
+  what opened it, so the parent hands it the keys it receives while it is open; `key()` moves
+  through the choosable items and Enter chooses. Taking focus would need focus to be settable from
+  code, which the toolkit does not offer yet.
+- **A shell layer** (`shell.h`, a file per platform): listing, the user's folders, drives, type
+  names, the applications that open a file, and launching. Windows asks the shell's association
+  handlers, which is the list Explorer shows, and invokes the chosen one the way Explorer does;
+  Linux reads the `.desktop` entries for the file's MIME type with `mimeapps.list` for the default;
+  macOS asks LaunchServices. Listing on Windows is `FindFirstFileExW` with a large fetch and basic
+  info: one call per batch gives names, sizes, times and attributes, and nothing per file.
+- **A folder streams.** `shell::list` hands over each batch as it is read, the first of 256 so the
+  first rows show at once, later ones of 4096 because each costs a hand-over. It runs on a worker
+  thread that a new navigation preempts: the queue is dropped and a generation counter makes the
+  read in flight stop at its next batch. A folder seen lately is shown from memory at once and read
+  again behind it, and the fresh listing replaces it whole, so the rows do not empty and refill.
+  Type names, the "Open with" lists and previews come from a second worker, cached per extension
+  and asked for only for the rows on screen or the file selected, so a slow registry never holds up
+  a listing and the menu usually opens with its applications already known.
+- **Sorting merges.** Rows that arrive are filtered, sorted among themselves and merged into the
+  order, instead of the whole folder being sorted again for every batch. Names are folded to lower
+  case once, on arrival, in ASCII: `std::tolower` consults the locale on every call. Measured on
+  `C:\Windows\WinSxS`, 32,496 entries, in Release: sorting was 112 ms per pass and ran once per
+  batch; it is now 9.6 ms for the last merge. The folder's first rows show 2.5 ms after Enter and
+  the whole of it is read in 21 ms.
+
+The first folder is asked for while the window and its renderer are still starting, so its time to
+first rows measures start-up; the status bar says "opened at start-up" for it rather than a number
+that blames the folder.

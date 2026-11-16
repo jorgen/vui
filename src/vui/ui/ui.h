@@ -183,6 +183,17 @@ struct drag_event_t
   int clicks = 1;
 };
 
+// The right button pressed on a pressable: where a context menu opens (G53). It goes to the topmost
+// pressable under the pointer that something subscribes to context events on, so a row inside a
+// list can have a menu of its own and the list one for the rest. The position is in window layout
+// units.
+struct context_event_t
+{
+  const pressable_t *source = nullptr;
+  point_t position;
+  modifier_t modifiers = modifier_t::none;
+};
+
 // Where the pointer is over a pressable, sent on every move while it hovers there and once with
 // `inside` false when it leaves (G51): a row under the pointer, a value under a chart's crosshair.
 // Only what subscribes pays for it; nothing is rebuilt for a move otherwise.
@@ -402,7 +413,8 @@ class pressable_t : public detail::source_t<press_event_t>,
                     public detail::source_t<typing_event_t>,
                     public detail::source_t<drag_event_t>,
                     public detail::source_t<wheel_event_t>,
-                    public detail::source_t<hover_event_t>
+                    public detail::source_t<hover_event_t>,
+                    public detail::source_t<context_event_t>
 {
   using presses_t = detail::source_t<press_event_t>;
   using keys_t = detail::source_t<key_event_t>;
@@ -410,6 +422,7 @@ class pressable_t : public detail::source_t<press_event_t>,
   using drags_t = detail::source_t<drag_event_t>;
   using wheels_t = detail::source_t<wheel_event_t>;
   using hovers_t = detail::source_t<hover_event_t>;
+  using contexts_t = detail::source_t<context_event_t>;
 
 public:
   pressable_t() = default;
@@ -429,6 +442,7 @@ public:
     , drags_t(std::move(other))
     , wheels_t(std::move(other))
     , hovers_t(std::move(other))
+    , contexts_t(std::move(other))
     , _focusable(other._focusable)
     , _text_input(other._text_input)
   {
@@ -441,6 +455,7 @@ public:
     drags_t::operator=(std::move(other));
     wheels_t::operator=(std::move(other));
     hovers_t::operator=(std::move(other));
+    contexts_t::operator=(std::move(other));
     _focusable = other._focusable;
     _text_input = other._text_input;
     return *this;

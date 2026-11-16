@@ -52,6 +52,7 @@ Copyright (c) 2026 Jørgen Lind
 // What a widget keeps itself is only what no parent cares about: whether a menu is open, which row
 // the keyboard is on.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -68,6 +69,7 @@ class checkbox_t;
 class combobox_t;
 class line_edit_t;
 class text_edit_t;
+class context_menu_t;
 
 // Colours and sizes every widget draws with. One dark theme for now; making it a prop, or something
 // a subtree inherits, is open.
@@ -316,6 +318,66 @@ private:
   std::shared_ptr<detail::menu_t> _menu;
   int _highlight = -1;
   mutable std::optional<int> _asked;
+};
+
+// One row of a context menu.
+struct menu_item_t
+{
+  enum class kind_t : std::uint8_t
+  {
+    item,
+    // A thin rule between groups.
+    separator,
+    // A quiet title over a group: "Open with".
+    header,
+  };
+  std::string label;
+  // Shown at the right, quieter: a shortcut, or where the item leads.
+  std::string detail;
+  bool enabled = true;
+  kind_t kind = kind_t::item;
+  friend bool operator==(const menu_item_t &, const menu_item_t &) = default;
+};
+
+struct menu_choice_t
+{
+  const context_menu_t *source = nullptr;
+  std::size_t index = 0;
+};
+
+// A menu that opens where its parent places it and over everything else: a context menu (G53). The
+// parent shows it while it is open, at the pointer that opened it, and closes it on `chosen` or on
+// a press on `dismiss`, which is everywhere outside it:
+//
+//   if (menu_at)
+//     nodes.push_back(ui::at_t{.x = menu_at->x, .y = menu_at->y,
+//                              .children = {ui::mount(menu, {.items = items}).on_top(menu.dismiss)}});
+//
+// It does not take focus from what opened it, so the parent hands it the keys it receives while it
+// is open: key() moves through the items with Up and Down and chooses with Enter.
+class context_menu_t
+{
+public:
+  struct props_t
+  {
+    std::vector<menu_item_t> items;
+    friend bool operator==(const props_t &, const props_t &) = default;
+  };
+  props_t props;
+  event_source_t<menu_choice_t> chosen;
+  pressable_t dismiss;
+
+  [[nodiscard]] node_t view() const;
+  behaviour_t behave(scope_t &scope);
+  // Whether it used the key: Up, Down, Home, End and Enter.
+  bool key(const key_event_t &event, scope_t &scope);
+
+  static constexpr std::size_t max_items = 64;
+
+private:
+  [[nodiscard]] bool choosable(std::size_t index) const noexcept;
+  std::array<pressable_t, max_items> _rows;
+  int _highlight = -1;
 };
 
 struct line_edit_event_t
