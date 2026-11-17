@@ -980,3 +980,20 @@ Scrolling needs the height of what is hidden, and `bounds()` is cut to the clip 
 `pressable_t::laid_out()` reports the box whole, where layout put it. `--ui-test` opens a second,
 short window and checks that the list and the sidebar end above the status bar and that the wheel
 scrolls the sidebar.
+
+## G65. Folder sizes, counted in the background
+
+Once a folder's listing is complete, each folder in it is counted on a thread of its own, one
+after another: everything under it is read with the same `shell::list` the window uses, links not
+followed, so nothing is counted twice and a link back up the tree is not walked forever. Folders
+that cannot be read are skipped. A big folder's running total is shown faded with an ellipsis as it
+grows, every quarter second; finished sizes go to the window in batches at most every 100 ms,
+because a folder of a thousand small folders would otherwise rebuild the table a thousand times.
+Going elsewhere stops the count (the listing's generation counter); sizes are kept for the session,
+so coming back shows them at once, and reading the same folder again (F5) counts its folders again.
+Sorting by size orders folders by what they hold once that is known. The details pane gives a
+folder's size and file count, "so far" until it is done.
+
+The sizes are logical: what the files hold, not what they occupy on disk, which Explorer's
+Properties also reports first. A tree with millions of files takes as long as reading it does; it
+runs on its own thread, so nothing waits for it.

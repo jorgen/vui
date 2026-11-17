@@ -508,6 +508,58 @@ private:
 
 // ---- the file table
 
+// What a folder holds, everything under it added up (G65): a running total while it is counted,
+// `done` once every folder under it has been read.
+struct folder_size_t
+{
+  std::uint64_t bytes = 0;
+  std::uint64_t files = 0;
+  bool done = false;
+};
+
+// Adds up what is under `root`, links not followed, so nothing is counted twice and no loop is
+// walked forever. `progress` hears the running total now and then; `keep_going` false stops it.
+// Folders it cannot read are skipped. Returns false when it was stopped.
+bool measure_folder(const std::string &root, const std::function<bool()> &keep_going, const std::function<void(const folder_size_t &)> &progress, folder_size_t &size)
+{
+  std::vector<std::string> pending{root};
+  auto told = clock_t_::now();
+  while (!pending.empty())
+  {
+    const auto folder = std::move(pending.back());
+    pending.pop_back();
+    (void)shell::list(folder,
+                      [&](std::vector<shell::entry_t> &&batch)
+                      {
+                        if (!keep_going())
+                          return false;
+                        for (const auto &e : batch)
+                        {
+                          if (e.directory)
+                          {
+                            if (!e.link)
+                              pending.push_back(shell::join(folder, e.name));
+                          }
+                          else
+                          {
+                            size.bytes += e.size;
+                            ++size.files;
+                          }
+                        }
+                        return true;
+                      });
+    if (!keep_going())
+      return false;
+    if (clock_t_::now() - told > 250ms)
+    {
+      progress(size);
+      told = clock_t_::now();
+    }
+  }
+  size.done = true;
+  return true;
+}
+
 struct table_context_t
 {
   // -1 when the press was on no row.
@@ -534,6 +586,8 @@ public:
   ui::event_source_t<table_context_t> context;
   // Extensions the visible rows need a name for, which the parent should look up.
   std::function<void(const std::string &)> want_type;
+  // What a folder in this listing holds, once it has been counted or while it is.
+  std::function<const folder_size_t *(const std::string &name)> folder_size;
   const std::unordered_map<std::string, std::string> *types = nullptr;
 
   [[nodiscard]] const std::vector<shell::entry_t> &entries() const noexcept
@@ -573,6 +627,14 @@ public:
   {
     return index < _marked.size() && _marked[index];
   }
+  // Sizes of folders came in: shown at once, and the order follows them when sorted by size.
+  void folder_sizes_changed(ui::scope_t &scope)
+  {
+    if (_sort == 3)
+      dirty();
+    ui::invalidate(scope, *this);
+  }
+
   // Ctrl+A.
   void select_all(ui::scope_t &scope)
   {
@@ -993,6 +1055,9 @@ private:
     default:
       if (!e.directory)
         box.children.push_back(text(bytes(e.size), 12, t.text_muted, true));
+      else if (const auto *size = folder_size && !e.link ? folder_size(e.name) : nullptr)
+        // Still being counted: the total so far, faded, with an ellipsis.
+        box.children.push_back(text(bytes(size->bytes) + (size->done ? "" : "\u2026"), 12, size->done ? t.text_muted : faded(t.text_muted, 0.6f), true));
       break;
     }
     return box;
@@ -1048,8 +1113,19 @@ private:
           c = natural_folded(type_names[extension_of(x.name)], type_names[extension_of(y.name)]);
         break;
       default:
-        c = x.size < y.size ? -1 : (x.size > y.size ? 1 : 0);
+      {
+        // A folder sorts by what it holds once that is known; until then as empty.
+        const auto size_of = [&](const shell::entry_t &e) -> std::uint64_t
+        {
+          if (!e.directory)
+            return e.size;
+          const auto *known = folder_size ? folder_size(e.name) : nullptr;
+          return known ? known->bytes : 0;
+        };
+        const auto sx = size_of(x), sy = size_of(y);
+        c = sx < sy ? -1 : (sx > sy ? 1 : 0);
         break;
+      }
       }
       if (c == 0)
         return natural_folded(_folded[a], _folded[b]) < 0;
@@ -1466,6 +1542,9 @@ struct explorer_t
   ui::pressable_t path_bar;
   // The whole window, for the mouse's back and forward buttons wherever the pointer is.
   ui::pressable_t window_area;
+  // Folder sizes by path (G65), counted on a thread of their own and kept for the session.
+  std::unordered_map<std::string, folder_size_t> folder_sizes;
+  worker_t *sizer = nullptr;
   // The sidebar's room and its list, which scrolls inside it when the window is short.
   ui::pressable_t sidebar_area, sidebar_content;
   float sidebar_scroll = 0;
@@ -1515,6 +1594,9 @@ struct explorer_t
       back_stack.push_back(path);
       forward_stack.clear();
     }
+    // F5, or anything else that reads the folder shown again, counts its folders again.
+    if (folder == path)
+      std::erase_if(folder_sizes, [&](const auto &item) { return shell::parent(item.first) == folder; });
     path = std::move(folder);
     editing_path = false;
     ++navigations;
@@ -1582,8 +1664,71 @@ struct explorer_t
               first_rows = clock_t_::now() - asked_at;
             remember(path, table.entries());
             say("");
+            measure_folders(mine);
             scope.invalidate();
           });
+      });
+  }
+
+  // Count what each folder in the listing holds, one after another on the sizer, those not counted
+  // yet. Results go up in batches -- a folder of a thousand small folders would otherwise rebuild
+  // the table a thousand times -- and a big folder's running total goes up as it grows. Going
+  // elsewhere stops it.
+  void measure_folders(std::uint64_t mine)
+  {
+    std::vector<std::string> wanted;
+    for (const auto &e : table.entries())
+    {
+      if (!e.directory || e.link)
+        continue;
+      const auto full = shell::join(path, e.name);
+      if (auto known = folder_sizes.find(full); known == folder_sizes.end() || !known->second.done)
+        wanted.push_back(full);
+    }
+    if (wanted.empty())
+      return;
+    auto gen = generation;
+    auto *p = pipe;
+    sizer->replace(
+      [this, gen, p, mine, wanted]
+      {
+        using found_t = std::vector<std::pair<std::string, folder_size_t>>;
+        found_t found;
+        auto sent = clock_t_::now();
+        const auto send = [&]
+        {
+          if (found.empty())
+            return;
+          p->post_event(
+            [this, found = std::move(found)](ui::scope_t &scope)
+            {
+              for (const auto &[full, size] : found)
+                folder_sizes[full] = size;
+              table.folder_sizes_changed(scope);
+              scope.invalidate();
+            });
+          found.clear();
+          sent = clock_t_::now();
+        };
+        const auto keep_going = [&] { return gen->load() == mine; };
+        for (const auto &full : wanted)
+        {
+          folder_size_t size;
+          const bool finished = measure_folder(
+            full, keep_going,
+            [&](const folder_size_t &so_far)
+            {
+              found.emplace_back(full, so_far);
+              send();
+            },
+            size);
+          if (!finished)
+            return;
+          found.emplace_back(full, size);
+          if (clock_t_::now() - sent > 100ms)
+            send();
+        }
+        send();
       });
   }
 
@@ -2609,6 +2754,14 @@ struct explorer_t
     line("Type", e->directory ? "File folder" : (types.contains(extension_of(e->name)) ? types.at(extension_of(e->name)) : extension_of(e->name)));
     if (!e->directory)
       line("Size", bytes(e->size) + (e->size >= 1024 ? "  (" + grouped(e->size) + " bytes)" : ""));
+    else if (!e->link)
+    {
+      const auto found = folder_sizes.find(shell::join(path, e->name));
+      if (found == folder_sizes.end())
+        line("Size", "counting...");
+      else
+        line("Size", bytes(found->second.bytes) + (found->second.done ? "" : " so far") + ", " + grouped(found->second.files) + (found->second.files == 1 ? " file" : " files"));
+    }
     line("Modified", when(e->modified));
     if (!e->directory)
     {
@@ -2720,12 +2873,19 @@ struct explorer_t
     worker_t lister_thread(false);
     worker_t helper_thread(true);
     worker_t jobs_thread(true);
+    worker_t sizer_thread(false);
     pipe = &events_from_workers;
+    sizer = &sizer_thread;
     lister = &lister_thread;
     helper = &helper_thread;
     jobs = &jobs_thread;
     table.types = &types;
     table.want_type = [this](const std::string &ext) { want_type(ext); };
+    table.folder_size = [this](const std::string &name) -> const folder_size_t *
+    {
+      const auto found = folder_sizes.find(shell::join(path, name));
+      return found == folder_sizes.end() ? nullptr : &found->second;
+    };
 
     // A file to start at opens its folder with it selected, as the path bar does.
     {
@@ -2931,6 +3091,7 @@ struct explorer_t
       }
     }
     ui_test_hook = {};
+    sizer = nullptr;
     pipe = nullptr;
     lister = nullptr;
     helper = nullptr;
@@ -2988,6 +3149,15 @@ vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::s
   {
     auto &ex = *ui_test_hook.explorer;
     auto &scope = *ui_test_hook.scope;
+    {
+      // The size of "sub", counted after the listing: one file of five bytes.
+      const auto sub = shell::join(folder, "sub");
+      for (int i = 0; i < 250 && !(ex.folder_sizes.contains(sub) && ex.folder_sizes[sub].done); ++i)
+        co_await ui_test_pause(loop, 20);
+      const auto found = ex.folder_sizes.find(sub);
+      check(found != ex.folder_sizes.end() && found->second.done && found->second.bytes == 5 && found->second.files == 1,
+            "a folder's size is counted after the listing (" + (found == ex.folder_sizes.end() ? std::string("none") : std::to_string(found->second.bytes) + " bytes") + ")");
+    }
     const auto row = [&](int position)
     {
       const auto b = ex.table.body_bounds();
@@ -3085,10 +3255,15 @@ vio::task_t<void> ui_test_small(vio::event_loop_t &loop, vui::window_t &window, 
     const auto side = ex.sidebar_area.bounds();
     check(body.height > 0 && body.y + body.height <= room.height - 20, "in a short window the list ends above the status bar (" + std::to_string(body.y + body.height) + " of " + std::to_string(room.height) + ")");
     check(side.y + side.height <= room.height - 20, "and so does the sidebar (" + std::to_string(side.y + side.height) + ")");
-    check(ex.sidebar_limit() > 0, "the sidebar has more than fits (" + std::to_string(int(ex.sidebar_limit())) + " over)");
-    window.impl()->on_input(vui::scroll_event_t{0, -2, ui_test_at(scope, side.x + side.width / 2.0, side.y + side.height / 2.0)});
-    co_await ui_test_pause(loop, 80);
-    check(ex.sidebar_scroll > 0, "and the wheel scrolls it (" + std::to_string(int(ex.sidebar_scroll)) + ")");
+    // How many places and drives there are is the machine's; with few, the sidebar fits.
+    if (ex.sidebar_limit() <= 0)
+      std::printf("  (the sidebar fits here, so scrolling it is not tried)\n");
+    else
+    {
+      window.impl()->on_input(vui::scroll_event_t{0, -2, ui_test_at(scope, side.x + side.width / 2.0, side.y + side.height / 2.0)});
+      co_await ui_test_pause(loop, 80);
+      check(ex.sidebar_scroll > 0, "the wheel scrolls the sidebar, which has more than fits (" + std::to_string(int(ex.sidebar_scroll)) + " of " + std::to_string(int(ex.sidebar_limit())) + ")");
+    }
   }
   window.impl()->on_close_request();
 }
@@ -3315,6 +3490,20 @@ int probe_and_check()
       check(first_ok, "the first page of a PDF (" + said(first) + ", " + ms(std::chrono::duration_cast<std::chrono::nanoseconds>(drawn_in)) + ")");
       check(last_ok, "a page past the end is the last one (" + said(last) + ", " + ms(std::chrono::duration_cast<std::chrono::nanoseconds>(last_in)) + ")");
     }
+  }
+  // A folder's size, everything under it: three files in two levels, 10 + 20 + 30 bytes.
+  {
+    const auto top = shell::join(scratch, "measured");
+    std::error_code ec;
+    std::filesystem::create_directories(native(shell::join(shell::join(top, "one"), "two")), ec);
+    std::ofstream(native(shell::join(top, "a")), std::ios::binary) << std::string(10, 'a');
+    std::ofstream(native(shell::join(shell::join(top, "one"), "b")), std::ios::binary) << std::string(20, 'b');
+    std::ofstream(native(shell::join(shell::join(shell::join(top, "one"), "two"), "c")), std::ios::binary) << std::string(30, 'c');
+    folder_size_t size;
+    const bool finished = measure_folder(top, [] { return true; }, [](const folder_size_t &) {}, size);
+    check(finished && size.done && size.bytes == 60 && size.files == 3, "a folder's size counts everything under it (" + std::to_string(size.bytes) + " bytes in " + std::to_string(size.files) + " files)");
+    folder_size_t stopped;
+    check(!measure_folder(top, [] { return false; }, [](const folder_size_t &) {}, stopped) && !stopped.done, "and stops when asked");
   }
   // Archives: every format some installed tool writes, packed and unpacked again, the contents
   // compared; and extracting again keeps a file that is there.
