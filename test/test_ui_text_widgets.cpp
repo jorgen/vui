@@ -571,6 +571,53 @@ TEST_CASE("ui context: the right button goes to the topmost pressable with a con
         });
 }
 
+TEST_CASE("ui navigate: back and forward go to the topmost pressable with a subscriber")
+{
+  struct root_t
+  {
+    ui::pressable_t window;
+    ui::pressable_t row;
+    std::vector<ui::navigate_event_t> seen;
+
+    ui::node_t view() const
+    {
+      return ui::column_t{.padding = 10,
+                          .children = {ui::box_t{.size = {200, 100}, .color = {0.2f, 0.2f, 0.2f, 1}, .events = window, .children = {ui::box_t{.size = {100, 30}, .color = {0, 0, 1, 1}, .events = row}}}}};
+    }
+    ui::behaviour_t behave(ui::scope_t &scope)
+    {
+      auto navigations = ui::subscribe<ui::navigate_event_t>(window);
+      auto moves = ui::subscribe<ui::hover_event_t>(row);
+      auto events = ui::merge(scope, navigations, moves);
+      while (auto event = co_await events)
+      {
+        if (event->index() == 0)
+          seen.push_back(std::get<0>(*event));
+      }
+    }
+  } root;
+  frame_t frame;
+  drive(root, frame,
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          const auto row = rect_of(frame, &root.row);
+          const vui::point_t at{row.x + 20.0, row.y + 10.0};
+          for (const auto button : {vui::button_t::back, vui::button_t::forward})
+          {
+            window.impl()->on_input(vui::pointer_button_event_t{button, true, at});
+            window.impl()->on_input(vui::pointer_button_event_t{button, false, at});
+          }
+          co_await settle(loop);
+          REQUIRE(root.seen.size() == 2);
+          CHECK(root.seen[0].source == &root.window);
+          CHECK_FALSE(root.seen[0].forward);
+          CHECK(root.seen[1].forward);
+          click(window, at);
+          co_await settle(loop);
+          CHECK(root.seen.size() == 2);
+        });
+}
+
 TEST_CASE("ui context menu: opens where placed, chooses by pointer and keyboard, and is dismissed outside")
 {
   struct root_t

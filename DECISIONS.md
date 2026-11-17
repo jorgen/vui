@@ -905,3 +905,12 @@ Their own context-menu extensions -- 7-Zip's or WinRAR's submenus in Explorer --
 on Windows that means loading third-party shell extension DLLs into the process, which can take it
 down with them, and flattening their nested menus. The same actions through the tools' command
 lines give the user the same result without either.
+
+## G60. The mouse's back and forward buttons
+
+Every backend already reported them as `button_t::back` and `button_t::forward`; the UI dropped
+them. They now become `navigate_event_t`, routed like the wheel: to the topmost pressable under the
+pointer that has a subscriber, so a pager inside a window can take them before the window does. An
+application that wants them anywhere puts a pressable on its outermost box, which costs nothing
+else, since presses fall through a pressable nobody listens to (G52). The explorer does that, and
+closes an open menu but leaves a delete question alone when one arrives.

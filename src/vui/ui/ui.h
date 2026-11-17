@@ -224,6 +224,17 @@ struct wheel_event_t
   modifier_t modifiers = modifier_t::none;
 };
 
+// The mouse's back or forward button (G60), pressed over a pressable. Like the wheel it goes to the
+// topmost pressable under the pointer that something subscribes to these on, so a view that pages
+// can take it before the window around it does.
+struct navigate_event_t
+{
+  const pressable_t *source = nullptr;
+  bool forward = false;
+  point_t position;
+  modifier_t modifiers = modifier_t::none;
+};
+
 namespace detail
 {
 template <typename E>
@@ -414,7 +425,8 @@ class pressable_t : public detail::source_t<press_event_t>,
                     public detail::source_t<drag_event_t>,
                     public detail::source_t<wheel_event_t>,
                     public detail::source_t<hover_event_t>,
-                    public detail::source_t<context_event_t>
+                    public detail::source_t<context_event_t>,
+                    public detail::source_t<navigate_event_t>
 {
   using presses_t = detail::source_t<press_event_t>;
   using keys_t = detail::source_t<key_event_t>;
@@ -423,6 +435,7 @@ class pressable_t : public detail::source_t<press_event_t>,
   using wheels_t = detail::source_t<wheel_event_t>;
   using hovers_t = detail::source_t<hover_event_t>;
   using contexts_t = detail::source_t<context_event_t>;
+  using navigates_t = detail::source_t<navigate_event_t>;
 
 public:
   pressable_t() = default;
@@ -443,6 +456,7 @@ public:
     , wheels_t(std::move(other))
     , hovers_t(std::move(other))
     , contexts_t(std::move(other))
+    , navigates_t(std::move(other))
     , _focusable(other._focusable)
     , _text_input(other._text_input)
   {
@@ -456,6 +470,7 @@ public:
     wheels_t::operator=(std::move(other));
     hovers_t::operator=(std::move(other));
     contexts_t::operator=(std::move(other));
+    navigates_t::operator=(std::move(other));
     _focusable = other._focusable;
     _text_input = other._text_input;
     return *this;

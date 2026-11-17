@@ -523,6 +523,22 @@ public:
     }
   }
 
+  // Back and forward go to the topmost pressable under the pointer with a subscriber, as the wheel does.
+  void navigate(point_t position, bool forward, modifier_t modifiers)
+  {
+    for (auto it = _items.rbegin(); it != _items.rend(); ++it)
+    {
+      const auto *source = it->box->events.source;
+      if (!source || !it->rect.contains(position))
+        continue;
+      auto &navigates = static_cast<detail::source_t<navigate_event_t> &>(*const_cast<pressable_t *>(source));
+      if (!navigates.subscribed())
+        continue;
+      navigates.emit(navigate_event_t{source, forward, position, modifiers}, *this);
+      return;
+    }
+  }
+
   // The right button goes to the topmost pressable under the pointer with a context subscriber. A
   // popup keeps it, as it keeps presses: nothing under a menu opens another.
   void context(point_t position, modifier_t modifiers)
@@ -580,6 +596,11 @@ public:
     if (event.button == button_t::right && event.pressed)
     {
       context(to_logical(event.position), event.modifiers);
+      return;
+    }
+    if ((event.button == button_t::back || event.button == button_t::forward) && event.pressed)
+    {
+      navigate(to_logical(event.position), event.button == button_t::forward, event.modifiers);
       return;
     }
     if (event.button != button_t::left)

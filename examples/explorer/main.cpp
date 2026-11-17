@@ -650,8 +650,6 @@ public:
     ui::box_t body{.size = {300, 200},
                    .color = well,
                    .radius = 6,
-                   .border_width = _body.focused() ? 1.5f : 0.0f,
-                   .border_color = faded(t.focus_ring, 0.6f),
                    .events = _body,
                    .grow = 1,
                    .align_x = ui::align_t::start,
@@ -1216,6 +1214,8 @@ struct explorer_t
   ui::context_menu_t menu;
   confirm_t confirm;
   ui::pressable_t path_bar;
+  // The whole window, for the mouse's back and forward buttons wherever the pointer is.
+  ui::pressable_t window_area;
   ui::line_edit_t path_edit;
 
   pipe_t *pipe = nullptr;
@@ -1392,6 +1392,26 @@ struct explorer_t
             scope.invalidate();
           });
       });
+  }
+
+  void go_back(ui::scope_t &scope)
+  {
+    if (back_stack.empty())
+      return;
+    forward_stack.push_back(path);
+    auto to = back_stack.back();
+    back_stack.pop_back();
+    go(scope, to, false);
+  }
+
+  void go_forward(ui::scope_t &scope)
+  {
+    if (forward_stack.empty())
+      return;
+    back_stack.push_back(path);
+    auto to = forward_stack.back();
+    forward_stack.pop_back();
+    go(scope, to, false);
   }
 
   [[nodiscard]] bool is_in_places(const std::string &folder) const
@@ -2135,7 +2155,7 @@ struct explorer_t
                                                           details()}},
                                    status_bar()}};
     // The menu, over everything, where it was opened.
-    ui::box_t whole{.color = clear, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {std::move(page)}};
+    ui::box_t whole{.color = clear, .events = window_area, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {std::move(page)}};
     if (menu_at)
       whole.children.push_back(ui::at_t{.x = float(menu_at->x), .y = float(menu_at->y), .children = {ui::mount(menu, {.items = menu_items}).on_top(menu.dismiss)}});
     if (confirming)
@@ -2205,8 +2225,9 @@ struct explorer_t
     auto entered = ui::subscribe<ui::line_edit_event_t>(path_edit.submitted);
     auto path_keys = ui::subscribe<vui::key_event_t>(path_edit.field());
     auto place_menus = ui::subscribe<ui::context_event_t>(place_buttons);
+    auto navigations = ui::subscribe<ui::navigate_event_t>(window_area);
     auto events = ui::merge(scope, presses, crumbs, places_pressed, filters, toggles, selections, activations, contexts, choices, dismissals, keys, answers, declined, bar_drags, bar_menus, typed,
-                            entered, path_keys, place_menus);
+                            entered, path_keys, place_menus, navigations);
     while (auto event = co_await events)
     {
       switch (event->index())
@@ -2214,20 +2235,10 @@ struct explorer_t
       case 0:
       {
         const auto *source = std::get<0>(*event).source;
-        if (source == &back_button && !back_stack.empty())
-        {
-          forward_stack.push_back(path);
-          auto to = back_stack.back();
-          back_stack.pop_back();
-          go(scope, to, false);
-        }
-        else if (source == &forward_button && !forward_stack.empty())
-        {
-          back_stack.push_back(path);
-          auto to = forward_stack.back();
-          forward_stack.pop_back();
-          go(scope, to, false);
-        }
+        if (source == &back_button)
+          go_back(scope);
+        else if (source == &forward_button)
+          go_forward(scope);
         else if (source == &up_button)
           up(scope);
         else if (source == &home_button)
@@ -2298,6 +2309,16 @@ struct explorer_t
       case 16:
         go_to_typed(scope);
         break;
+      case 19:
+        // The mouse's back and forward buttons; a menu open closes, a question asked stays.
+        if (confirming)
+          break;
+        menu_at.reset();
+        if (std::get<19>(*event).forward)
+          go_forward(scope);
+        else
+          go_back(scope);
+        break;
       case 17:
         if (std::get<17>(*event).pressed && std::get<17>(*event).key == vui::key_t::escape)
           editing_path = false;
@@ -2339,20 +2360,10 @@ struct explorer_t
         }
         if (key.key == vui::key_t::backspace || (alt && key.key == vui::key_t::up))
           up(scope);
-        else if (alt && key.key == vui::key_t::left && !back_stack.empty())
-        {
-          forward_stack.push_back(path);
-          auto to = back_stack.back();
-          back_stack.pop_back();
-          go(scope, to, false);
-        }
-        else if (alt && key.key == vui::key_t::right && !forward_stack.empty())
-        {
-          back_stack.push_back(path);
-          auto to = forward_stack.back();
-          forward_stack.pop_back();
-          go(scope, to, false);
-        }
+        else if (alt && key.key == vui::key_t::left)
+          go_back(scope);
+        else if (alt && key.key == vui::key_t::right)
+          go_forward(scope);
         else if (key.key == vui::key_t::f5)
           go(scope, path, false);
         else if (key.key == vui::key_t::delete_key)
