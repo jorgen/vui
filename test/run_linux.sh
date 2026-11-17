@@ -25,6 +25,7 @@ for backend in x11 wayland; do
   "$examples/vui_hello" 20
   "$examples/vui_input_echo" 300
   "$examples/vui_windows_and_network" 1300
+  "$examples/vui_explorer" --ui-test
   if [ -x "$examples/vui_vulkan_clear" ]; then
     "$examples/vui_vulkan_clear" 30
   fi

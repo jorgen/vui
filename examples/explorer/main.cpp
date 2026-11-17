@@ -338,6 +338,19 @@ std::string archive_stem(const std::string &name)
   return dot == std::string::npos || dot == 0 ? name : name.substr(0, dot);
 }
 
+// What an archive of several items in `folder` is called: the folder's name, or "Archive" at a
+// drive's root, which has none.
+std::string several_stem(const std::string &folder)
+{
+  auto name = folder;
+  while (!name.empty() && (name.back() == '/' || name.back() == '\\'))
+    name.pop_back();
+  name = name.substr(std::min(name.size(), name.find_last_of("\\/") + 1));
+  if (name.empty() || name.back() == ':')
+    return "Archive";
+  return name;
+}
+
 // `base` + `suffix` in `folder`, or "base (2)" and on, whichever is not taken yet.
 std::string free_name(const std::string &folder, const std::string &base, const std::string &suffix)
 {
@@ -531,9 +544,47 @@ public:
   {
     return _selected;
   }
-  [[nodiscard]] const shell::entry_t *selected_entry() const noexcept
+  // What is selected, in the order shown. Only rows shown count: a filter that hides a selected row
+  // keeps it out of what a Delete reaches.
+  [[nodiscard]] std::vector<std::size_t> selected_indices() const
   {
-    return _selected >= 0 && std::size_t(_selected) < _entries.size() ? &_entries[std::size_t(_selected)] : nullptr;
+    std::vector<std::size_t> out;
+    for (const auto i : order())
+    {
+      if (i < _marked.size() && _marked[i])
+        out.push_back(i);
+    }
+    return out;
+  }
+  [[nodiscard]] std::vector<shell::entry_t> selected_entries() const
+  {
+    std::vector<shell::entry_t> out;
+    for (const auto i : selected_indices())
+      out.push_back(_entries[i]);
+    return out;
+  }
+  // The selected entry when exactly one is.
+  [[nodiscard]] const shell::entry_t *selected_entry() const
+  {
+    const auto chosen = selected_indices();
+    return chosen.size() == 1 ? &_entries[chosen.front()] : nullptr;
+  }
+  [[nodiscard]] bool is_selected(std::size_t index) const noexcept
+  {
+    return index < _marked.size() && _marked[index];
+  }
+  // Ctrl+A.
+  void select_all(ui::scope_t &scope)
+  {
+    const auto &o = order();
+    if (o.empty())
+      return;
+    for (const auto i : o)
+      _marked[i] = 1;
+    if (_selected < 0)
+      _selected = long(o.front());
+    ui::emit(selected, _selected, scope);
+    ui::invalidate(scope, *this);
   }
   [[nodiscard]] std::size_t shown() const
   {
@@ -551,6 +602,14 @@ public:
   {
     return _body.bounds();
   }
+  [[nodiscard]] ui::rect_t name_grip_bounds() const noexcept
+  {
+    return _name_grip.bounds();
+  }
+  [[nodiscard]] int name_column_width() const noexcept
+  {
+    return _name_width > 0 ? int(_name_width) : _headers[0].bounds().width;
+  }
 
   // A new folder: what is known of it so far, nothing selected, at the top. `select` names what to
   // select once it appears: the folder just left, when going up.
@@ -559,6 +618,8 @@ public:
     _entries = std::move(entries);
     refold();
     _selected = -1;
+    _anchor = -1;
+    _marked.assign(_entries.size(), 0);
     _scroll = 0;
     _pending_select = std::move(select);
     take_pending_select(scope);
@@ -570,34 +631,53 @@ public:
     _entries.insert(_entries.end(), std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
     for (std::size_t i = _folded.size(); i < _entries.size(); ++i)
       _folded.push_back(fold(_entries[i].name));
+    _marked.resize(_entries.size(), 0);
     take_pending_select(scope);
     // Not dirty: order() merges the new rows into what it has.
     ui::invalidate(scope, *this);
   }
-  // A row that has gone -- moved to the Recycle Bin -- leaves the selection on the row that took its
-  // place, as Explorer does.
-  void remove(ui::scope_t &scope, const std::string &name)
+  // Rows that have gone -- moved to the Recycle Bin -- leave the selection on the row that took the
+  // place of the first, as Explorer does.
+  void remove(ui::scope_t &scope, const std::vector<std::string> &names)
   {
-    long at = -1;
-    for (std::size_t i = 0; i < _entries.size(); ++i)
-    {
-      if (_entries[i].name == name)
-        at = long(i);
-    }
-    if (at < 0)
-      return;
-    long position = 0;
+    const std::unordered_set<std::string> gone(names.begin(), names.end());
+    long position = -1;
     const auto &o = order();
     for (std::size_t i = 0; i < o.size(); ++i)
     {
-      if (long(o[i]) == at)
+      if (gone.contains(_entries[o[i]].name))
+      {
         position = long(i);
+        break;
+      }
     }
-    _entries.erase(_entries.begin() + at);
-    _folded.erase(_folded.begin() + at);
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < _entries.size(); ++i)
+    {
+      if (gone.contains(_entries[i].name))
+        continue;
+      if (kept != i)
+      {
+        _entries[kept] = std::move(_entries[i]);
+        _folded[kept] = std::move(_folded[i]);
+      }
+      ++kept;
+    }
+    if (kept == _entries.size())
+      return;
+    _entries.resize(kept);
+    _folded.resize(kept);
+    _marked.assign(kept, 0);
+    _anchor = -1;
     dirty();
     const auto &after = order();
-    _selected = after.empty() ? -1 : long(after[std::size_t(std::min(position, long(after.size()) - 1))]);
+    _selected = -1;
+    if (!after.empty() && position >= 0)
+    {
+      _selected = long(after[std::size_t(std::min(position, long(after.size()) - 1))]);
+      _marked[std::size_t(_selected)] = 1;
+      _anchor = _selected;
+    }
     ui::emit(selected, _selected, scope);
     ui::invalidate(scope, *this);
   }
@@ -605,17 +685,27 @@ public:
   // A fresh listing of the folder already shown: keep the selection by name, and the scroll.
   void replace(ui::scope_t &scope, std::vector<shell::entry_t> entries)
   {
-    const std::string keep = selected_entry() ? selected_entry()->name : std::string();
+    std::unordered_set<std::string> keep;
+    for (std::size_t i = 0; i < _entries.size(); ++i)
+    {
+      if (i < _marked.size() && _marked[i])
+        keep.insert(_entries[i].name);
+    }
+    const std::string current = _selected >= 0 && std::size_t(_selected) < _entries.size() ? _entries[std::size_t(_selected)].name : std::string();
+    const std::string anchor = _anchor >= 0 && std::size_t(_anchor) < _entries.size() ? _entries[std::size_t(_anchor)].name : std::string();
     _entries = std::move(entries);
     refold();
     _selected = -1;
-    if (!keep.empty())
+    _anchor = -1;
+    _marked.assign(_entries.size(), 0);
+    for (std::size_t i = 0; i < _entries.size(); ++i)
     {
-      for (std::size_t i = 0; i < _entries.size(); ++i)
-      {
-        if (_entries[i].name == keep)
-          _selected = long(i);
-      }
+      if (keep.contains(_entries[i].name))
+        _marked[i] = 1;
+      if (_entries[i].name == current)
+        _selected = long(i);
+      if (_entries[i].name == anchor)
+        _anchor = long(i);
     }
     dirty();
     ui::invalidate(scope, *this);
@@ -638,7 +728,7 @@ public:
                                           .grow = grows(c) ? 1.0f : 0.0f,
                                           .padding = {10, 0},
                                           .align_x = columns[c].right ? ui::align_t::end : ui::align_t::start,
-                                          .clip = c == 0,
+                                          .clip = c == 0 && _name_width > 0,
                                           .children = {std::move(label)}});
       // The Name column's right edge, dragged to size it; a double click lets it fill again.
       if (c == 0)
@@ -669,7 +759,7 @@ public:
     {
       const auto index = o[i];
       const auto &e = _entries[index];
-      const bool chosen = long(index) == _selected;
+      const bool chosen = is_selected(index);
       ui::row_t cells{.align = ui::align_t::center};
       for (std::size_t c = 0; c < columns.size(); ++c)
       {
@@ -765,12 +855,15 @@ public:
         if (drag.phase != ui::drag_phase_t::begin)
           break;
         const long at = row_at(drag.position.y);
+        const auto how = how_for(drag.modifiers);
         if (at >= 0 && std::size_t(at) < order().size())
         {
-          select_at(std::size_t(at), scope);
-          if (drag.clicks == 2)
+          select_at(std::size_t(at), scope, how);
+          if (drag.clicks == 2 && how == select_t::only)
             ui::emit(activated, _selected, scope);
         }
+        else if (how == select_t::only)
+          select_none(scope);
         break;
       }
       case 3:
@@ -789,7 +882,11 @@ public:
         long index = -1;
         if (at >= 0 && std::size_t(at) < order().size())
         {
-          select_at(std::size_t(at), scope);
+          // A row already selected keeps the selection it is part of, so the menu acts on all of it.
+          if (!is_selected(order()[std::size_t(at)]))
+            select_at(std::size_t(at), scope);
+          else
+            _selected = long(order()[std::size_t(at)]);
           index = _selected;
         }
         ui::emit(context, table_context_t{index, menu.position}, scope);
@@ -985,12 +1082,78 @@ private:
     return -1;
   }
 
-  void select_at(std::size_t position, ui::scope_t &scope)
+  // How a click or a key selects: the row alone, the row toggled in or out (Ctrl, or Command on a
+  // Mac), or everything from the anchor to the row (Shift).
+  enum class select_t
   {
-    const long index = long(order()[position]);
-    if (index == _selected)
-      return;
+    only,
+    toggle,
+    extend
+  };
+  [[nodiscard]] static select_t how_for(vui::modifier_t modifiers) noexcept
+  {
+    if (vui::has(modifiers, vui::modifier_t::shift))
+      return select_t::extend;
+#if defined(__APPLE__)
+    if (vui::has(modifiers, vui::modifier_t::super))
+      return select_t::toggle;
+#else
+    if (vui::has(modifiers, vui::modifier_t::control))
+      return select_t::toggle;
+#endif
+    return select_t::only;
+  }
+
+  void select_at(std::size_t position, ui::scope_t &scope, select_t how = select_t::only)
+  {
+    const auto &o = order();
+    const long index = long(o[position]);
+    switch (how)
+    {
+    case select_t::only:
+    {
+      const bool alone = index == _selected && _marked[std::size_t(index)] && selected_indices().size() == 1;
+      if (alone)
+        return;
+      std::fill(_marked.begin(), _marked.end(), 0);
+      _marked[std::size_t(index)] = 1;
+      _anchor = index;
+      break;
+    }
+    case select_t::toggle:
+      _marked[std::size_t(index)] = !_marked[std::size_t(index)];
+      _anchor = index;
+      break;
+    case select_t::extend:
+    {
+      long from = -1;
+      for (std::size_t i = 0; i < o.size(); ++i)
+      {
+        if (long(o[i]) == _anchor)
+          from = long(i);
+      }
+      if (from < 0)
+      {
+        from = long(position);
+        _anchor = index;
+      }
+      std::fill(_marked.begin(), _marked.end(), 0);
+      for (auto i = std::min(from, long(position)); i <= std::max(from, long(position)); ++i)
+        _marked[o[std::size_t(i)]] = 1;
+      break;
+    }
+    }
     _selected = index;
+    ui::emit(selected, _selected, scope);
+  }
+
+  void select_none(ui::scope_t &scope)
+  {
+    if (selected_indices().empty())
+      return;
+    std::fill(_marked.begin(), _marked.end(), 0);
+    _selected = -1;
+    _anchor = -1;
     ui::emit(selected, _selected, scope);
   }
 
@@ -1003,6 +1166,9 @@ private:
       if (_entries[i].name == _pending_select)
       {
         _selected = long(i);
+        _anchor = long(i);
+        std::fill(_marked.begin(), _marked.end(), 0);
+        _marked[i] = 1;
         _pending_select.clear();
         ui::emit(selected, _selected, scope);
         return;
@@ -1048,6 +1214,13 @@ private:
     const auto &key = std::get<0>(input);
     if (!key.pressed || o.empty())
       return;
+    const bool command = vui::has(key.modifiers, vui::modifier_t::control) || vui::has(key.modifiers, vui::modifier_t::super);
+    if (command && key.key == vui::key_t::a)
+    {
+      select_all(scope);
+      return;
+    }
+    const auto how = vui::has(key.modifiers, vui::modifier_t::shift) ? select_t::extend : select_t::only;
     const long n = long(o.size());
     long at = position_of_selected();
     const long page = std::max(1L, long(height / row_height) - 1);
@@ -1079,7 +1252,7 @@ private:
     default:
       return;
     }
-    select_at(std::size_t(at), scope);
+    select_at(std::size_t(at), scope, how);
     keep_in_view(at, height);
   }
 
@@ -1097,7 +1270,11 @@ private:
   float _scroll = 0;
   float _grab = 0;
   int _hovered = -1;
+  // The current row, where the keyboard is; the rows selected, one flag per entry; and the row a
+  // Shift range is counted from.
   long _selected = -1;
+  std::vector<char> _marked;
+  long _anchor = -1;
   std::string _pending_select;
   std::string _typed;
   clock_t_::time_point _typed_at;
@@ -1186,6 +1363,16 @@ enum class action_t
   refresh,
 };
 
+// --ui-test drives a real explorer window by feeding events into the window's own input queue --
+// never the system's mouse -- and reads its state back through this.
+struct explorer_t;
+struct ui_test_hook_t
+{
+  explorer_t *explorer = nullptr;
+  ui::scope_t *scope = nullptr;
+};
+inline ui_test_hook_t ui_test_hook;
+
 struct explorer_t
 {
   explicit explorer_t(std::string start)
@@ -1252,12 +1439,15 @@ struct explorer_t
   std::optional<std::size_t> menu_place;
 
   // What is waiting for "are you sure" before it goes to the Recycle Bin, or for good.
-  std::optional<shell::entry_t> confirming;
+  // What a Delete is asking about: one entry or several.
+  std::optional<std::vector<shell::entry_t>> confirming;
   bool confirming_permanent = false;
 
   // The context menu, while open: where, for what, and what each item does.
   std::optional<vui::point_t> menu_at;
   std::optional<shell::entry_t> menu_entry;
+  // Everything the menu acts on: the entry alone, or the whole selection it is part of.
+  std::vector<shell::entry_t> menu_entries;
   std::vector<std::pair<action_t, std::size_t>> menu_actions;
 
   std::vector<shell::place_t> places;
@@ -1396,8 +1586,11 @@ struct explorer_t
 
   // Extract, open or compress with an archive tool, on the jobs thread; the folder is read again when
   // it is done, with what was made selected.
-  void archive_job(ui::scope_t &, action_t action, const archive_offer_t &offer, const shell::entry_t &entry)
+  void archive_job(ui::scope_t &, action_t action, const archive_offer_t &offer, const std::vector<shell::entry_t> &entries)
   {
+    if (entries.empty())
+      return;
+    const auto &entry = entries.front();
     const auto &tool = shell::archivers()[offer.tool];
     const auto item = shell::join(path, entry.name);
     const auto folder = path;
@@ -1411,10 +1604,14 @@ struct explorer_t
     std::function<std::expected<void, std::string>()> work;
     if (action == action_t::compress)
     {
-      made = free_name(folder, archive_stem(entry.name), "." + offer.suffix);
+      // Several items are named after the folder they are in, as Explorer and Finder name them.
+      made = free_name(folder, entries.size() == 1 ? archive_stem(entry.name) : several_stem(folder), "." + offer.suffix);
       const auto archive = shell::join(folder, made);
-      doing = "Compressing " + entry.name + " to " + made + " with " + tool.name;
-      work = [tool, item, archive] { return shell::compress(tool, item, archive); };
+      std::vector<std::string> items;
+      for (const auto &e : entries)
+        items.push_back(shell::join(folder, e.name));
+      doing = "Compressing " + (entries.size() == 1 ? entry.name : grouped(entries.size()) + " items") + " to " + made + " with " + tool.name;
+      work = [tool, items, archive] { return shell::compress(tool, items, archive); };
     }
     else if (action == action_t::extract_to)
     {
@@ -1817,43 +2014,57 @@ struct explorer_t
       });
   }
 
-  void ask_to_trash(const shell::entry_t &entry, bool permanent)
+  void ask_to_trash(std::vector<shell::entry_t> entries, bool permanent)
   {
+    if (entries.empty())
+      return;
     menu_at.reset();
-    confirming = entry;
+    confirming = std::move(entries);
     confirming_permanent = permanent;
   }
 
-  // On the helper: a big folder takes a while to move, and the window should not wait for it.
+  // On the helper: a big folder takes a while to move, and the window should not wait for it. Each
+  // item goes on its own, so one that cannot be moved does not keep the others.
   void trash_confirmed(ui::scope_t &)
   {
     if (!confirming)
       return;
-    const auto entry = *confirming;
+    const auto entries = *confirming;
     const bool permanent = confirming_permanent;
     confirming.reset();
-    const auto target = shell::join(path, entry.name);
     const auto folder = path;
-    say(permanent ? "Deleting " + entry.name + "..." : "Moving " + entry.name + " to the " + shell::trash_name() + "...");
+    const auto what = entries.size() == 1 ? entries.front().name : grouped(entries.size()) + " items";
+    say(permanent ? "Deleting " + what + "..." : "Moving " + what + " to the " + shell::trash_name() + "...");
     auto *p = pipe;
     helper->post(
-      [this, p, target, folder, entry, permanent]
+      [this, p, folder, entries, permanent, what]
       {
-        auto r = permanent ? shell::remove_permanently(target) : shell::trash(target);
+        std::vector<std::string> gone;
+        std::string failed;
+        for (const auto &entry : entries)
+        {
+          const auto target = shell::join(folder, entry.name);
+          auto r = permanent ? shell::remove_permanently(target) : shell::trash(target);
+          if (r)
+            gone.push_back(entry.name);
+          else if (failed.empty())
+            failed = entry.name + ": " + r.error();
+        }
         p->post_event(
-          [this, r, folder, entry, permanent](ui::scope_t &scope)
+          [this, folder, gone, failed, permanent, what, total = entries.size()](ui::scope_t &scope)
           {
-            if (!r)
+            if (!failed.empty())
+              say((permanent ? "Could not delete " : "Could not move ") + failed + (total > 1 ? " (" + grouped(gone.size()) + " of " + grouped(total) + " done)" : std::string()), true);
+            else
+              say(permanent ? "Deleted " + what + " permanently" : "Moved " + what + " to the " + shell::trash_name());
+            if (!gone.empty())
             {
-              say((permanent ? "Could not delete " : "Could not move ") + entry.name + ": " + r.error(), true);
-              scope.invalidate();
-              return;
+              const std::unordered_set<std::string> names(gone.begin(), gone.end());
+              if (auto it = listings.find(folder); it != listings.end())
+                std::erase_if(it->second, [&](const shell::entry_t &e) { return names.contains(e.name); });
+              if (path == folder)
+                table.remove(scope, gone);
             }
-            say(permanent ? "Deleted " + entry.name + " permanently" : "Moved " + entry.name + " to the " + shell::trash_name());
-            if (auto it = listings.find(folder); it != listings.end())
-              std::erase_if(it->second, [&](const shell::entry_t &e) { return e.name == entry.name; });
-            if (path == folder)
-              table.remove(scope, entry.name);
             scope.invalidate();
           });
       });
@@ -1880,7 +2091,17 @@ struct explorer_t
     menu_for_path = for_path;
     menu_place = place;
     menu_entry = std::move(entry);
-    if (menu_entry && !menu_entry->directory)
+    menu_entries.clear();
+    if (menu_entry)
+    {
+      auto chosen = table.selected_entries();
+      const bool within = std::any_of(chosen.begin(), chosen.end(), [&](const shell::entry_t &e) { return e.name == menu_entry->name; });
+      if (within && chosen.size() > 1)
+        menu_entries = std::move(chosen);
+      else
+        menu_entries = {*menu_entry};
+    }
+    if (menu_entry && menu_entries.size() == 1 && !menu_entry->directory)
       want_handlers(shell::join(path, menu_entry->name));
     menu_at = at;
     build_menu(scope);
@@ -1922,6 +2143,40 @@ struct explorer_t
       rule();
       add({.label = "Copy path"}, action_t::copy_path);
       add({.label = "Reset Places to the standard folders"}, action_t::reset_places);
+    }
+    else if (menu_entries.size() > 1)
+    {
+      const auto files = std::count_if(menu_entries.begin(), menu_entries.end(), [](const shell::entry_t &e) { return !e.directory; });
+      header(grouped(menu_entries.size()) + " items selected");
+      add({.label = "Open", .detail = files == 0 ? "" : grouped(std::uint64_t(files)) + (files == 1 ? " file" : " files"), .enabled = files > 0}, action_t::open);
+      archive_offers.clear();
+      const auto &tools = shell::archivers();
+      bool archive_header = false;
+      for (const char *suffix : {"zip", "7z", "rar", "tar.gz"})
+      {
+        for (std::size_t t = 0; t < tools.size(); ++t)
+        {
+          if (std::find(tools[t].creates.begin(), tools[t].creates.end(), suffix) == tools[t].creates.end())
+            continue;
+          if (!archive_header)
+          {
+            rule();
+            header("Archive");
+            archive_header = true;
+          }
+          archive_offers.push_back({t, suffix});
+          add({.label = "Compress to \"" + several_stem(path) + "." + suffix + "\"", .detail = tools[t].name}, action_t::compress, archive_offers.size() - 1);
+          break;
+        }
+      }
+      rule();
+      add({.label = "Copy paths", .detail = "Ctrl+Shift+C"}, action_t::copy_path);
+#if defined(_WIN32)
+      add({.label = "Copy paths with backslashes"}, action_t::copy_path_native);
+#endif
+      rule();
+      add({.label = "Delete", .detail = "Del"}, action_t::trash);
+      add({.label = "Delete permanently", .detail = "Shift+Del"}, action_t::remove);
     }
     else if (menu_entry)
     {
@@ -2044,8 +2299,14 @@ struct explorer_t
       return;
     const auto [action, extra] = menu_actions[index];
     const auto entry = menu_entry;
+    const auto entries = menu_entries;
     const auto place = menu_place;
     menu_at.reset();
+    if (entries.size() > 1)
+    {
+      act_on_several(scope, action, extra, entries);
+      return;
+    }
     if (place)
     {
       act_on_place(scope, action, *place);
@@ -2090,7 +2351,7 @@ struct explorer_t
     case action_t::open_in_archiver:
     case action_t::compress:
       if (entry && extra < archive_offers.size())
-        archive_job(scope, action, archive_offers[extra], *entry);
+        archive_job(scope, action, archive_offers[extra], {*entry});
       break;
     case action_t::reveal:
       launch([target] { return shell::reveal(target); }, std::string("Shown in ") + shell::file_manager_name());
@@ -2103,16 +2364,64 @@ struct explorer_t
       break;
     case action_t::trash:
       if (entry)
-        ask_to_trash(*entry, false);
+        ask_to_trash({*entry}, false);
       break;
     case action_t::remove:
       if (entry)
-        ask_to_trash(*entry, true);
+        ask_to_trash({*entry}, true);
       break;
     case action_t::refresh:
       go(scope, path, false);
       break;
     }
+  }
+
+  // What the menu does for a selection of several.
+  void act_on_several(ui::scope_t &scope, action_t action, std::size_t extra, const std::vector<shell::entry_t> &entries)
+  {
+    switch (action)
+    {
+    case action_t::open:
+      for (const auto &e : entries)
+      {
+        if (e.directory)
+          continue;
+        const auto file = shell::join(path, e.name);
+        launch([file] { return shell::open(file); }, "Opened " + e.name);
+      }
+      break;
+    case action_t::compress:
+      if (extra < archive_offers.size())
+        archive_job(scope, action, archive_offers[extra], entries);
+      break;
+    case action_t::copy_path:
+    case action_t::copy_path_native:
+      copy_paths(scope, entries, action == action_t::copy_path);
+      break;
+    case action_t::trash:
+    case action_t::remove:
+      ask_to_trash(entries, action == action_t::remove);
+      break;
+    default:
+      break;
+    }
+  }
+
+  // The paths of the entries, a line each; the folder's own when there are none.
+  void copy_paths(ui::scope_t &scope, const std::vector<shell::entry_t> &entries, bool forward_slashes)
+  {
+    std::string text;
+    for (const auto &e : entries)
+    {
+      if (!text.empty())
+        text += '\n';
+      const auto full = shell::join(path, e.name);
+      text += forward_slashes ? portable(full) : full;
+    }
+    if (entries.empty())
+      text = forward_slashes ? portable(path) : path;
+    scope.window().set_clipboard_text(text);
+    say(entries.size() > 1 ? "Copied " + grouped(entries.size()) + " paths" : "Copied " + text);
   }
 
   // ---- views
@@ -2230,6 +2539,30 @@ struct explorer_t
     const auto &t = ui::theme();
     const auto *e = table.selected_entry();
     ui::column_t col{.gap = 8, .align = ui::align_t::stretch};
+    if (const auto chosen = table.selected_indices(); chosen.size() > 1)
+    {
+      std::uint64_t files = 0, size = 0;
+      for (const auto i : chosen)
+      {
+        const auto &c = table.entries()[i];
+        if (!c.directory)
+        {
+          ++files;
+          size += c.size;
+        }
+      }
+      const auto folders = std::uint64_t(chosen.size()) - files;
+      col.children.push_back(text(grouped(chosen.size()) + " items selected", 15, t.text));
+      std::string kinds;
+      if (folders > 0)
+        kinds = grouped(folders) + (folders == 1 ? " folder" : " folders");
+      if (files > 0)
+        kinds += (kinds.empty() ? "" : ", ") + grouped(files) + (files == 1 ? " file" : " files");
+      col.children.push_back(muted(kinds));
+      if (files > 0)
+        col.children.push_back(muted(bytes(size) + " in the files" + (size >= 1024 ? "  (" + grouped(size) + " bytes)" : "")));
+      return ui::box_t{.size = {270, 0}, .color = panel, .radius = 10, .padding = 14, .align_x = ui::align_t::stretch, .align_y = ui::align_t::start, .children = {std::move(col)}};
+    }
     if (!e)
     {
       col.children.push_back(text("Nothing selected", 15, t.text));
@@ -2286,6 +2619,8 @@ struct explorer_t
     std::string facts = grouped(table.shown()) + (table.shown() == 1 ? " item" : " items");
     if (table.shown() != table.entries().size())
       facts += " (of " + grouped(table.entries().size()) + ")";
+    if (const auto chosen = table.selected_indices().size(); chosen > 1)
+      facts += "  ·  " + grouped(chosen) + " selected";
     if (loading)
       facts += from_cache ? "  ·  shown from memory, checking for changes..." : "  ·  reading...";
     else
@@ -2317,17 +2652,26 @@ struct explorer_t
       const auto b = table.body_bounds();
       const std::string where = shell::trash_name();
       confirm_t::props_t ask;
+      const auto &items = *confirming;
+      const bool one = items.size() == 1;
+      const auto named = one ? "\"" + items.front().name + "\"" : grouped(items.size()) + " items";
+      const bool folders = std::any_of(items.begin(), items.end(), [](const shell::entry_t &e) { return e.directory; });
       if (confirming_permanent)
       {
-        ask.title = "Permanently delete \"" + confirming->name + "\"?";
-        ask.message = confirming->directory ? "The folder and everything in it will be deleted.\nThis cannot be undone." : "It will not go to the " + where + ".\nThis cannot be undone.";
+        ask.title = "Permanently delete " + named + "?";
+        ask.message = one && folders  ? "The folder and everything in it will be deleted.\nThis cannot be undone."
+                      : folders       ? "They will be deleted, with everything in the folders.\nThis cannot be undone."
+                      : one           ? "It will not go to the " + where + ".\nThis cannot be undone."
+                                      : "They will not go to the " + where + ".\nThis cannot be undone.";
         ask.confirm = "Delete permanently";
         ask.danger = true;
       }
       else
       {
-        ask.title = "Move \"" + confirming->name + "\" to the " + where + "?";
-        ask.message = confirming->directory ? "The folder and everything in it can be restored from the " + where + "." : "It can be restored from the " + where + ".";
+        ask.title = "Move " + named + " to the " + where + "?";
+        ask.message = one && folders ? "The folder and everything in it can be restored from the " + where + "."
+                      : one          ? "It can be restored from the " + where + "."
+                                     : "They can be restored from the " + where + ".";
         ask.confirm = "Move to " + where;
       }
       whole.children.push_back(ui::at_t{.x = float(b.x + b.width / 2 - 200), .y = float(b.y + 60), .children = {ui::mount(confirm, std::move(ask)).on_top(confirm.dismiss)}});
@@ -2338,6 +2682,7 @@ struct explorer_t
   ui::behaviour_t behave(ui::scope_t &scope)
   {
     pipe_t events_from_workers(scope.loop(), [&scope](apply_t &&apply) { apply(scope); });
+    ui_test_hook = {this, &scope};
     // Declared after the pipe, so their threads are joined before it goes.
     worker_t lister_thread(false);
     worker_t helper_thread(true);
@@ -2427,8 +2772,12 @@ struct explorer_t
         show_hidden = std::get<4>(*event).checked;
         break;
       case 5:
-        preview_for(scope, std::get<5>(*event));
+      {
+        // A preview for one selected entry; none for several.
+        const auto chosen = table.selected_indices();
+        preview_for(scope, chosen.size() == 1 ? long(chosen.front()) : -1);
         break;
+      }
       case 6:
         activate(scope, std::get<6>(*event));
         break;
@@ -2524,24 +2873,16 @@ struct explorer_t
         else if (key.key == vui::key_t::f5)
           go(scope, path, false);
         else if (key.key == vui::key_t::delete_key)
-        {
-          if (const auto *e = table.selected_entry())
-            ask_to_trash(*e, shift);
-        }
+          ask_to_trash(table.selected_entries(), shift);
         else if ((shift && key.key == vui::key_t::f10) || key.key == vui::key_t::menu)
         {
           std::optional<shell::entry_t> entry;
-          if (const auto *e = table.selected_entry())
-            entry = *e;
+          if (const auto chosen = table.selected_entries(); !chosen.empty())
+            entry = chosen.front();
           open_menu(scope, entry, table.selected_point());
         }
         else if (ctrl && shift && key.key == vui::key_t::c)
-        {
-          const auto *e = table.selected_entry();
-          const auto target = portable(e ? shell::join(path, e->name) : path);
-          scope.window().set_clipboard_text(target);
-          say("Copied " + target);
-        }
+          copy_paths(scope, table.selected_entries(), true);
         else if (alt && key.key == vui::key_t::enter && shell::has_properties())
         {
           const auto *e = table.selected_entry();
@@ -2552,12 +2893,181 @@ struct explorer_t
       }
       }
     }
+    ui_test_hook = {};
     pipe = nullptr;
     lister = nullptr;
     helper = nullptr;
     jobs = nullptr;
   }
 };
+
+// ---- --ui-test: the window itself, driven through its input queue, for CI
+
+vio::task_t<void> ui_test_pause(vio::event_loop_t &loop, int milliseconds)
+{
+  (void)co_await vio::sleep(loop, std::chrono::milliseconds(milliseconds));
+}
+
+// Layout units to the window system's, which is what input arrives in (G9).
+vui::point_t ui_test_at(ui::scope_t &scope, double x, double y)
+{
+  const auto f = scope.to_logical({1000, 1000});
+  return {x * 1000 / f.x, y * 1000 / f.y};
+}
+
+void ui_test_click(vui::window_t &window, vui::point_t at, vui::modifier_t modifiers = vui::modifier_t::none, vui::button_t button = vui::button_t::left)
+{
+  window.impl()->on_input(vui::pointer_move_event_t{at, modifiers});
+  window.impl()->on_input(vui::pointer_button_event_t{button, true, at, modifiers});
+  window.impl()->on_input(vui::pointer_button_event_t{button, false, at, modifiers});
+}
+
+void ui_test_key(vui::window_t &window, vui::key_t key, vui::modifier_t modifiers = vui::modifier_t::none)
+{
+  window.impl()->on_input(vui::key_event_t{key, 0, modifiers, true});
+  window.impl()->on_input(vui::key_event_t{key, 0, modifiers, false});
+}
+
+std::string ui_test_selected(const explorer_t &ex)
+{
+  std::string out;
+  for (const auto &e : ex.table.selected_entries())
+    out += (out.empty() ? "" : ",") + e.name;
+  return out;
+}
+
+// The folder holds "sub" and a.txt to f.txt, shown folders first: sub at row 0, a.txt at row 1.
+vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::string folder, int &failures)
+{
+  const auto check = [&failures](bool ok, const std::string &what)
+  {
+    std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.c_str());
+    failures += ok ? 0 : 1;
+  };
+  for (int i = 0; i < 250 && !(ui_test_hook.explorer && ui_test_hook.explorer->table.shown() == 7 && ui_test_hook.explorer->table.body_bounds().height > 0); ++i)
+    co_await ui_test_pause(loop, 20);
+  check(ui_test_hook.explorer && ui_test_hook.explorer->table.shown() == 7, "the folder is listed");
+  if (ui_test_hook.explorer && ui_test_hook.explorer->table.shown() == 7)
+  {
+    auto &ex = *ui_test_hook.explorer;
+    auto &scope = *ui_test_hook.scope;
+    const auto row = [&](int position)
+    {
+      const auto b = ex.table.body_bounds();
+      return ui_test_at(scope, b.x + 80.0, b.y + position * 26.0 + 13.0);
+    };
+    const auto command = vui::modifier_t::control;
+    const auto expect = [&](const std::string &wanted, const std::string &what) { check(ui_test_selected(ex) == wanted, what + " (" + ui_test_selected(ex) + ")"); };
+
+    ui_test_click(window, row(1));
+    co_await ui_test_pause(loop, 80);
+    expect("a.txt", "a click selects one row");
+    ui_test_click(window, row(3), command);
+    co_await ui_test_pause(loop, 80);
+    expect("a.txt,c.txt", "Ctrl+click adds a row");
+    ui_test_click(window, row(5), vui::modifier_t::shift);
+    co_await ui_test_pause(loop, 80);
+    expect("c.txt,d.txt,e.txt", "Shift+click selects from the anchor");
+    ui_test_click(window, row(4), command);
+    co_await ui_test_pause(loop, 80);
+    expect("c.txt,e.txt", "Ctrl+click takes a row out");
+    ui_test_click(window, row(12));
+    co_await ui_test_pause(loop, 80);
+    expect("", "a click below the rows clears it");
+    ui_test_key(window, vui::key_t::a, command);
+    co_await ui_test_pause(loop, 80);
+    expect("sub,a.txt,b.txt,c.txt,d.txt,e.txt,f.txt", "Ctrl+A selects everything");
+    co_await ui_test_pause(loop, 550);
+    ui_test_click(window, row(1));
+    ui_test_key(window, vui::key_t::down, vui::modifier_t::shift);
+    ui_test_key(window, vui::key_t::down, vui::modifier_t::shift);
+    co_await ui_test_pause(loop, 80);
+    expect("a.txt,b.txt,c.txt", "Shift+Down extends it");
+    ui_test_click(window, row(2), vui::modifier_t::none, vui::button_t::right);
+    co_await ui_test_pause(loop, 80);
+    check(ex.menu_at.has_value() && ex.menu_entries.size() == 3, "a right click inside the selection keeps it for the menu (" + std::to_string(ex.menu_entries.size()) + ")");
+    expect("a.txt,b.txt,c.txt", "and the selection is unchanged");
+    ui_test_key(window, vui::key_t::escape);
+    co_await ui_test_pause(loop, 80);
+    check(!ex.menu_at.has_value(), "Escape closes the menu");
+    ui_test_key(window, vui::key_t::delete_key, vui::modifier_t::shift);
+    co_await ui_test_pause(loop, 80);
+    check(ex.confirming && ex.confirming->size() == 3, "Shift+Delete asks about all three");
+    ui_test_key(window, vui::key_t::enter);
+    for (int i = 0; i < 250 && ex.table.shown() != 4; ++i)
+      co_await ui_test_pause(loop, 20);
+    std::error_code error;
+    const auto there = [&](const char *name) { return std::filesystem::exists(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(shell::join(folder, name).data()), shell::join(folder, name).size())), error); };
+    check(ex.table.shown() == 4 && !there("a.txt") && !there("b.txt") && !there("c.txt") && there("d.txt"), "and Enter deletes the three, and only them");
+    expect("d.txt", "the row that took their place is selected");
+
+    // The Name column's edge, dragged 100 to the left, and a double click on it to fill again.
+    const int before = ex.table.name_column_width();
+    const auto grip = ex.table.name_grip_bounds();
+    const double gx = grip.x + grip.width / 2.0, gy = grip.y + grip.height / 2.0;
+    window.impl()->on_input(vui::pointer_move_event_t{ui_test_at(scope, gx, gy)});
+    window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, ui_test_at(scope, gx, gy)});
+    // Narrower by up to 100, never under the 120 the column keeps.
+    const int by = std::clamp(before - 130, 0, 100);
+    for (int step = 1; step <= 10; ++step)
+      window.impl()->on_input(vui::pointer_move_event_t{ui_test_at(scope, gx - step * by / 10.0, gy)});
+    window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, ui_test_at(scope, gx - by, gy)});
+    co_await ui_test_pause(loop, 120);
+    const int after = ex.table.name_column_width();
+    check(by > 0 && std::abs(after - (before - by)) <= 1, "dragging the Name column's edge sizes it (" + std::to_string(before) + " to " + std::to_string(after) + ")");
+    check(window.cursor() == vui::cursor_t::arrow, "the pointer is the arrow again off the edge");
+    co_await ui_test_pause(loop, 550);
+    const auto moved = ex.table.name_grip_bounds();
+    ui_test_click(window, ui_test_at(scope, moved.x + moved.width / 2.0, moved.y + moved.height / 2.0));
+    co_await ui_test_pause(loop, 40);
+    check(window.cursor() == vui::cursor_t::resize_horizontal, "over the edge it is the resize arrow");
+    ui_test_click(window, ui_test_at(scope, moved.x + moved.width / 2.0, moved.y + moved.height / 2.0));
+    co_await ui_test_pause(loop, 120);
+    check(ex.table.name_column_width() == before, "a double click lets it fill again (" + std::to_string(ex.table.name_column_width()) + ")");
+  }
+  window.impl()->on_close_request();
+}
+
+int ui_test_main()
+{
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  shell::initialize();
+  const auto folder = (std::filesystem::temp_directory_path() / ("vui-explorer-ui-test-" + std::to_string(clock_t_::now().time_since_epoch().count()))).u8string();
+  const std::string scratch(reinterpret_cast<const char *>(folder.data()), folder.size());
+  std::filesystem::create_directories(std::filesystem::path(folder) / "sub");
+  for (const char *name : {"a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt"})
+    std::ofstream(std::filesystem::path(folder) / name, std::ios::binary) << name;
+  std::ofstream(std::filesystem::path(folder) / "sub" / "inner.txt", std::ios::binary) << "inner";
+  int failures = 0;
+  const int code = vio::run(
+    [scratch, &failures](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      auto display = vui::display_t::open(loop);
+      if (!display)
+      {
+        std::fprintf(stderr, "no display: %s\n", display.error().msg.c_str());
+        co_return 1;
+      }
+      auto window = vui::window_t::create(*display, {.title = "vui explorer test", .size = {1680, 1050}});
+      if (!window)
+        co_return 1;
+      auto closing = [](vui::window_t &window) -> vio::task_t<void>
+      {
+        auto requests = window.subscribe<vui::close_request_t>();
+        co_await requests;
+        window.close();
+      }(*window);
+      auto test = ui_test(loop, *window, scratch, failures);
+      co_await ui::run(*window, explorer_t{scratch});
+      co_await std::move(test);
+      co_await std::move(closing);
+      co_return 0;
+    });
+  std::error_code error;
+  std::filesystem::remove_all(std::filesystem::path(folder), error);
+  std::printf("ui test: %d failed\n", failures);
+  return code != 0 ? code : (failures == 0 ? 0 : 1);
+}
 
 // ---- --probe: the shell layer on its own, for CI
 
@@ -2739,6 +3249,7 @@ int probe_and_check()
     std::filesystem::create_directories(native(shell::join(source, "inner")), ec);
     std::ofstream(native(shell::join(source, "a.txt")), std::ios::binary) << "alpha\n";
     std::ofstream(native(shell::join(shell::join(source, "inner"), "b.txt")), std::ios::binary) << "beta\n";
+    std::ofstream(native(shell::join(scratch, "extra.txt")), std::ios::binary) << "gamma\n";
     const auto read = [&](const std::string &p)
     {
       std::ifstream in(native(p), std::ios::binary);
@@ -2750,12 +3261,13 @@ int probe_and_check()
       if (writer == tools.end())
         continue;
       const auto archive = shell::join(scratch, std::string("packed.") + suffix);
-      const auto packed = shell::compress(*writer, source, archive);
+      // Two items, a folder and a file beside it, as a selection of several is packed.
+      const auto packed = shell::compress(*writer, {source, shell::join(scratch, "extra.txt")}, archive);
       const auto reader = std::find_if(tools.begin(), tools.end(), [&](const shell::archiver_t &t) { return shell::can_extract(t, archive); });
       const auto into = shell::join(scratch, std::string("unpacked-") + suffix);
       const auto unpacked = packed && reader != tools.end() ? shell::extract(*reader, archive, into) : std::expected<void, std::string>(std::unexpected(std::string("nothing reads it")));
       const auto back = shell::join(into, "packed");
-      const bool same = unpacked && read(shell::join(back, "a.txt")) == "alpha\n" && read(shell::join(shell::join(back, "inner"), "b.txt")) == "beta\n";
+      const bool same = unpacked && read(shell::join(back, "a.txt")) == "alpha\n" && read(shell::join(shell::join(back, "inner"), "b.txt")) == "beta\n" && read(shell::join(into, "extra.txt")) == "gamma\n";
       check(packed && same, std::string(suffix) + " written by " + writer->name + (reader != tools.end() ? " and read back by " + reader->name : "") +
                               (packed ? (unpacked ? std::string() : ": " + unpacked.error()) : ": " + packed.error()));
       if (same)
@@ -2797,6 +3309,8 @@ int main(int argc, char **argv)
 {
   if (argc > 1 && std::strcmp(argv[1], "--probe") == 0)
     return probe_and_check();
+  if (argc > 1 && std::strcmp(argv[1], "--ui-test") == 0)
+    return ui_test_main();
   shell::initialize();
   // `vui_explorer [milliseconds] [--at folder]`: a time limit for CI, a folder to start in.
   long milliseconds = 0;

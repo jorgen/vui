@@ -949,3 +949,21 @@ The explorer's Name column fills the room the fixed columns leave until its righ
 then it has a width of its own (at least 120, at most what leaves the others theirs) and the space
 past Size is empty, as in Explorer and Finder. A double click on the edge lets it fill again. The
 width is not remembered between runs.
+
+## G63. Multi-select in the explorer, and a test that drives the window
+
+The table keeps a flag per entry beside the current row (where the keyboard is) and an anchor. A
+click selects one row, Ctrl+click (Command on a Mac) toggles one, Shift+click and Shift with the
+movement keys select from the anchor, Ctrl+A selects all, and a click below the rows clears it.
+Only rows shown count as selected, so a filter that hides a selected row keeps it out of a Delete.
+A right click on a selected row keeps the selection, and the menu acts on all of it: open the
+files, compress them into one archive named after the folder, copy their paths a line each, delete.
+Deleting several moves each on its own, so one that fails does not keep the others, and reports
+how many went. The details pane totals the selection; the preview shows only for one.
+
+`vui_explorer --ui-test` builds a scratch folder, opens the real window on it and feeds clicks and
+keys into the window's own input queue -- never the system's pointer, which would land on whatever
+is on top of the screen. It checks selection by mouse and keyboard, the menu on a selection,
+deleting three items, and dragging and resetting the Name column, reading state back through a
+hook the explorer sets while it runs. It caught a test of its own reading the cursor before the
+click was processed, and runs under X11, Wayland, macOS and Windows.

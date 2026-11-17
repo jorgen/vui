@@ -148,9 +148,9 @@ struct archiver_t
 // Unpacks `archive` into the folder `into`, which is made if needed. Never overwrites a file that is
 // there already. Waits until it is done: call it on a worker.
 std::expected<void, std::string> extract(const archiver_t &tool, const std::string &archive, const std::string &into);
-// Packs one file or folder into `archive`, which must not exist yet, its format chosen by its
-// suffix. Names inside are relative to the item's folder. Waits until it is done.
-std::expected<void, std::string> compress(const archiver_t &tool, const std::string &item, const std::string &archive);
+// Packs files and folders, all in one folder, into `archive`, which must not exist yet, its format
+// chosen by its suffix. Names inside are relative to that folder. Waits until it is done.
+std::expected<void, std::string> compress(const archiver_t &tool, const std::vector<std::string> &items, const std::string &archive);
 std::expected<void, std::string> open_in_archiver(const archiver_t &tool, const std::string &archive);
 
 // Moves a file or a folder, with everything in it, to the Recycle Bin or Trash, from where it can be

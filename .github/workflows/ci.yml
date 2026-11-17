@@ -89,6 +89,7 @@ jobs:
           ./build/vui_tests
           ./build/vui_task_manager --probe
           VUI_PROBE_TRASH=1 ./build/vui_explorer --probe
+          ./build/vui_explorer --ui-test
           ./build/vui_hello 20
           ./build/vui_input_echo 300
           ./build/vui_windows_and_network 1300

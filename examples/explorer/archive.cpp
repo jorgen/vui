@@ -123,36 +123,44 @@ std::expected<void, std::string> extract(const archiver_t &tool, const std::stri
   }
 }
 
-std::expected<void, std::string> compress(const archiver_t &tool, const std::string &item, const std::string &archive)
+std::expected<void, std::string> compress(const archiver_t &tool, const std::vector<std::string> &items, const std::string &archive)
 {
+  if (items.empty())
+    return std::unexpected(std::string("nothing to compress"));
   if (std::filesystem::exists(native(archive)))
     return std::unexpected(archive + " is there already");
-  const auto folder = parent(item);
-  const auto name = base_name(item);
+  const auto folder = parent(items.front());
+  std::vector<std::string> names;
+  for (const auto &item : items)
+    names.push_back(base_name(item));
   const auto s = suffix_of(archive);
+  const auto with = [](std::vector<std::string> argv, const std::vector<std::string> &more)
+  {
+    argv.insert(argv.end(), more.begin(), more.end());
+    return argv;
+  };
   switch (tool.kind)
   {
   case archiver_t::kind_t::seven_zip:
-    return finished(detail::run_tool({tool.program, "a", s == "7z" ? "-t7z" : "-tzip", archive, name, "-y", "-bso0", "-bsp0"}, folder), tool, 1);
+    return finished(detail::run_tool(with({tool.program, "a", s == "7z" ? "-t7z" : "-tzip", "-y", "-bso0", "-bsp0", archive}, names), folder), tool, 1);
   case archiver_t::kind_t::winrar:
   {
     std::vector<std::string> argv{tool.program, "a", "-ibck", "-ep1", "-r"};
     if (s == "zip")
       argv.push_back("-afzip");
     argv.push_back(archive);
-    argv.push_back(item);
-    return finished(detail::run_tool(argv, folder), tool, 1);
+    return finished(detail::run_tool(with(argv, items), folder), tool, 1);
   }
   case archiver_t::kind_t::bsdtar:
   case archiver_t::kind_t::gnu_tar:
     // -a picks the format from the archive's suffix: zip with libarchive, the compressed tars with both.
-    return finished(detail::run_tool({tool.program, "-a", "-c", "-f", archive, name}, folder), tool, 0);
+    return finished(detail::run_tool(with({tool.program, "-a", "-c", "-f", archive}, names), folder), tool, 0);
   case archiver_t::kind_t::info_zip:
   {
     auto zip = tool.program;
     const auto slash = zip.find_last_of("\\/");
     zip = (slash == std::string::npos ? std::string() : zip.substr(0, slash + 1)) + "zip";
-    return finished(detail::run_tool({zip, "-r", "-q", archive, name}, folder), tool, 0);
+    return finished(detail::run_tool(with({zip, "-r", "-q", archive}, names), folder), tool, 0);
   }
   default:
     return std::unexpected(tool.name + " has no command line to compress with");
