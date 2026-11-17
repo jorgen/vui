@@ -684,8 +684,15 @@ void window_t::focus()
 
 void window_t::set_cursor(cursor_t cursor)
 {
-  if (*this)
-    _impl->backend->set_cursor(cursor);
+  if (!*this)
+    return;
+  _impl->cursor = cursor;
+  _impl->backend->set_cursor(cursor);
+}
+
+cursor_t window_t::cursor() const noexcept
+{
+  return *this ? _impl->cursor : cursor_t::arrow;
 }
 
 void window_t::request_frame()

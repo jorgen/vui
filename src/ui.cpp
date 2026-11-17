@@ -504,6 +504,21 @@ public:
       hovering(_hovered, true);
     if (_held.source)
       drag(_held.source, drag_phase_t::move, _pointer, modifiers, _clicks);
+    update_cursor();
+  }
+
+  // The pointer's shape: the cursor of the topmost box under it that takes events, or the arrow.
+  // Held still while a press is, so dragging off a thin grip does not flicker back to the arrow.
+  void update_cursor()
+  {
+    if (!_held.empty())
+      return;
+    const auto *item = hit(_pointer);
+    const auto wanted = item && item->box->cursor ? *item->box->cursor : cursor_t::arrow;
+    if (wanted == _cursor)
+      return;
+    _cursor = wanted;
+    _window.set_cursor(wanted);
   }
 
   // The wheel goes to the topmost pressable under the pointer that has a wheel subscriber.
@@ -635,6 +650,7 @@ public:
       set_flag(held.source, &pressable_t::_held, false);
       drag(held.source, drag_phase_t::end, position, event.modifiers, _clicks);
     }
+    update_cursor();
     if (held.empty() || !(target_at(position) == held))
       return;
     const auto *item = find(held);
@@ -1793,6 +1809,7 @@ private:
   }
 
   window_t &_window;
+  cursor_t _cursor = cursor_t::arrow;
   vio::event_loop_t *_loop;
   run_config_t _config;
   vio::deferred_call_t _beat;

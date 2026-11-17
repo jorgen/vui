@@ -629,6 +629,10 @@ struct box_t
   color_t border_color = {0, 0, 0, 0};
   shadow_t shadow;
   event_ref_t events;
+  // The pointer's shape over it (G62): a resize arrow on a splitter, the text beam on a field. It
+  // counts on the topmost box under the pointer that takes events, and stays while a press that
+  // began on that box is held, so a drag that outruns a thin grip keeps it.
+  std::optional<cursor_t> cursor;
   // A one-line handler. It runs when the box is pressed, and its component is rebuilt after it.
   // For anything that spans several events, subscribe in behave() instead.
   std::function<void()> on_press;

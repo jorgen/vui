@@ -935,3 +935,17 @@ and never the others. Each platform carries a PDF renderer, so the explorer draw
 The pane shows a page at about twice its size, with arrows and "Page n of m" under it; pages share
 the thumbnail cache, so turning back is immediate. The probe writes a two-page PDF (a wide red page,
 a tall blue one) and checks the size and colour of both, the second asked for past the end.
+
+## G62. Pointer shapes on boxes, and a Name column that is dragged to size
+
+`box_t::cursor` names the pointer's shape over a box. It is read from the topmost box under the
+pointer that takes events -- the same box a press would reach -- so a button over a field gets the
+arrow, not the field's beam. While a press is held the shape does not change, because a drag
+outruns a thin grip at once and the arrow flickering back mid-drag is what every toolkit that
+forgets this looks like. `window_t::cursor()` reports the shape last set, which is how a test
+sees it. Line and text edits now show the text beam.
+
+The explorer's Name column fills the room the fixed columns leave until its right edge is dragged;
+then it has a width of its own (at least 120, at most what leaves the others theirs) and the space
+past Size is empty, as in Explorer and Finder. A double click on the edge lets it fill again. The
+width is not remembered between runs.

@@ -937,6 +937,7 @@ node_t line_edit_t::view() const
                .border_width = focused ? 2.0f : 1.0f,
                .border_color = focused ? t.focus_ring : (_field.hovered() && on ? t.border_hovered : t.border),
                .events = events_if(on, _field),
+               .cursor = on ? std::optional(cursor_t::text) : std::nullopt,
                .padding = {field_pad_x, field_pad_y},
                .align_x = align_t::stretch,
                .children = {std::move(text_area)}};
@@ -1241,6 +1242,7 @@ node_t text_edit_t::view() const
               .border_width = focused ? 2.0f : 1.0f,
               .border_color = focused ? t.focus_ring : (_area.hovered() && on ? t.border_hovered : t.border),
               .events = events_if(on, _area),
+              .cursor = on ? std::optional(cursor_t::text) : std::nullopt,
               .padding = {area_pad_x, area_pad_y},
               .align_x = align_t::stretch,
               .align_y = align_t::stretch,

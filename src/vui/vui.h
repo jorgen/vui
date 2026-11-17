@@ -229,6 +229,8 @@ public:
   void restore();
   void focus();
   void set_cursor(cursor_t cursor);
+  // The shape last set, the arrow until one is.
+  [[nodiscard]] cursor_t cursor() const noexcept;
   void request_frame();
 
   [[nodiscard]] extent_t size() const noexcept

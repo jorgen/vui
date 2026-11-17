@@ -354,6 +354,7 @@ public:
   extent_t size;
   extent_t framebuffer;
   float scale = 1.0f;
+  cursor_t cursor = cursor_t::arrow;
   bool visible = false;
   bool damaged = true;
   bool frame_tick = false;

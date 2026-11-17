@@ -571,6 +571,53 @@ TEST_CASE("ui context: the right button goes to the topmost pressable with a con
         });
 }
 
+TEST_CASE("ui cursor: the box under the pointer sets it, and a held press keeps it")
+{
+  struct root_t
+  {
+    ui::pressable_t grip;
+    ui::pressable_t plain;
+
+    ui::node_t view() const
+    {
+      return ui::row_t{.padding = 10,
+                       .children = {ui::box_t{.size = {20, 60}, .color = {1, 1, 1, 1}, .events = grip, .cursor = vui::cursor_t::resize_horizontal},
+                                    ui::box_t{.size = {100, 60}, .color = {0.2f, 0.2f, 0.2f, 1}, .events = plain}}};
+    }
+    ui::behaviour_t behave(ui::scope_t &scope)
+    {
+      auto drags = ui::subscribe<ui::drag_event_t>(grip);
+      auto events = ui::merge(scope, drags);
+      while (co_await events)
+      {
+      }
+    }
+  } root;
+  frame_t frame;
+  drive(root, frame,
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          const auto grip = rect_of(frame, &root.grip);
+          const auto plain = rect_of(frame, &root.plain);
+          const vui::point_t on_grip{grip.x + grip.width / 2.0, grip.y + grip.height / 2.0};
+          const vui::point_t on_plain{plain.x + plain.width / 2.0, plain.y + plain.height / 2.0};
+          window.impl()->on_input(vui::pointer_move_event_t{on_plain});
+          co_await settle(loop);
+          CHECK(window.cursor() == vui::cursor_t::arrow);
+          window.impl()->on_input(vui::pointer_move_event_t{on_grip});
+          co_await settle(loop);
+          CHECK(window.cursor() == vui::cursor_t::resize_horizontal);
+          // Dragged off the grip, it stays until the button is let go.
+          window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, on_grip});
+          window.impl()->on_input(vui::pointer_move_event_t{on_plain});
+          co_await settle(loop);
+          CHECK(window.cursor() == vui::cursor_t::resize_horizontal);
+          window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, on_plain});
+          co_await settle(loop);
+          CHECK(window.cursor() == vui::cursor_t::arrow);
+        });
+}
+
 TEST_CASE("ui navigate: back and forward go to the topmost pressable with a subscriber")
 {
   struct root_t
