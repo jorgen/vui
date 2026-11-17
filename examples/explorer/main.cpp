@@ -747,7 +747,7 @@ public:
     const float top = clamped(height);
     const auto first = std::size_t(top / row_height);
     const auto last = std::min(o.size(), first + std::size_t(height / row_height) + 2);
-    ui::box_t body{.size = {300, 200},
+    ui::box_t body{.size = {300, 52},
                    .color = well,
                    .radius = 6,
                    .events = _body,
@@ -1466,6 +1466,9 @@ struct explorer_t
   ui::pressable_t path_bar;
   // The whole window, for the mouse's back and forward buttons wherever the pointer is.
   ui::pressable_t window_area;
+  // The sidebar's room and its list, which scrolls inside it when the window is short.
+  ui::pressable_t sidebar_area, sidebar_content;
+  float sidebar_scroll = 0;
   ui::line_edit_t path_edit;
 
   pipe_t *pipe = nullptr;
@@ -2531,7 +2534,36 @@ struct explorer_t
     list.children.push_back(muted("Drives", 11));
     for (const auto &d : drives)
       entry(d);
-    return ui::box_t{.size = {200, 0}, .color = panel, .radius = 10, .padding = 10, .align_x = ui::align_t::stretch, .align_y = ui::align_t::start, .children = {std::move(list)}};
+    // A clipping box with a small height of its own, so a short window shrinks it rather than being
+    // held open by it; the wheel scrolls what does not fit, and a thin thumb says that it does.
+    const float limit = sidebar_limit();
+    const float scrolled = std::min(sidebar_scroll, limit);
+    const float room = float(sidebar_area.bounds().height);
+    std::vector<ui::node_t> thumb;
+    if (limit > 0 && room > 0)
+    {
+      const float length = std::max(24.0f, room * room / (room + limit));
+      thumb.push_back(ui::at_t{.x = 192, .y = 4 + scrolled / limit * (room - 8 - length), .children = {ui::box_t{.size = {4, int(length)}, .color = t.scrollbar, .radius = 2}}});
+    }
+    ui::box_t sidebar_box{.size = {200, 80},
+                     .color = panel,
+                     .radius = 10,
+                     .events = sidebar_area,
+                     .align_x = ui::align_t::start,
+                     .align_y = ui::align_t::start,
+                     .clip = true,
+                     .children = {ui::at_t{.x = 0,
+                                           .y = -scrolled,
+                                           .children = {ui::box_t{.size = {200, 0}, .color = clear, .events = sidebar_content, .padding = 10, .align_x = ui::align_t::stretch, .children = {std::move(list)}}}}}};
+    for (auto &node : thumb)
+      sidebar_box.children.push_back(std::move(node));
+    return sidebar_box;
+  }
+
+  // How far the sidebar can scroll: what its list is taller than the room it has.
+  [[nodiscard]] float sidebar_limit() const
+  {
+    return std::max(0.0f, float(sidebar_content.laid_out().height - sidebar_area.bounds().height));
   }
 
   ui::node_t details() const
@@ -2610,7 +2642,8 @@ struct explorer_t
         p.children.push_back(ui::box_t{.color = clear, .grow = 1, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {ui::mount(preview, {.read_only = true, .columns = 30, .rows = 8})}});
       whole.children.push_back(ui::box_t{.color = panel, .radius = 10, .grow = 1, .padding = 12, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {std::move(p)}});
     }
-    return ui::box_t{.size = {270, 0}, .color = clear, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {std::move(whole)}};
+    // Clipped with a small height of its own, as the sidebar is: the preview gives up room first.
+    return ui::box_t{.size = {270, 80}, .color = clear, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .clip = true, .children = {std::move(whole)}};
   }
 
   ui::node_t status_bar() const
@@ -2724,8 +2757,9 @@ struct explorer_t
     auto path_keys = ui::subscribe<vui::key_event_t>(path_edit.field());
     auto place_menus = ui::subscribe<ui::context_event_t>(place_buttons);
     auto navigations = ui::subscribe<ui::navigate_event_t>(window_area);
+    auto sidebar_wheel = ui::subscribe<ui::wheel_event_t>(sidebar_area);
     auto events = ui::merge(scope, presses, crumbs, places_pressed, filters, toggles, selections, activations, contexts, choices, dismissals, keys, answers, declined, bar_drags, bar_menus, typed,
-                            entered, path_keys, place_menus, navigations);
+                            entered, path_keys, place_menus, navigations, sidebar_wheel);
     while (auto event = co_await events)
     {
       switch (event->index())
@@ -2814,6 +2848,9 @@ struct explorer_t
         break;
       case 16:
         go_to_typed(scope);
+        break;
+      case 20:
+        sidebar_scroll = std::clamp(sidebar_scroll - float(std::get<20>(*event).dy) * 3 * 26, 0.0f, sidebar_limit());
         break;
       case 19:
         // The mouse's back and forward buttons; a menu open closes, a question asked stays.
@@ -3028,6 +3065,34 @@ vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::s
   window.impl()->on_close_request();
 }
 
+// A short window: the list and the status bar stay inside it, and the sidebar, taller than its
+// room, scrolls with the wheel.
+vio::task_t<void> ui_test_small(vio::event_loop_t &loop, vui::window_t &window, int &failures)
+{
+  const auto check = [&failures](bool ok, const std::string &what)
+  {
+    std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.c_str());
+    failures += ok ? 0 : 1;
+  };
+  for (int i = 0; i < 250 && !(ui_test_hook.explorer && ui_test_hook.explorer->table.shown() > 0 && ui_test_hook.explorer->sidebar_area.bounds().height > 0); ++i)
+    co_await ui_test_pause(loop, 20);
+  if (ui_test_hook.explorer)
+  {
+    auto &ex = *ui_test_hook.explorer;
+    auto &scope = *ui_test_hook.scope;
+    const auto room = scope.viewport();
+    const auto body = ex.table.body_bounds();
+    const auto side = ex.sidebar_area.bounds();
+    check(body.height > 0 && body.y + body.height <= room.height - 20, "in a short window the list ends above the status bar (" + std::to_string(body.y + body.height) + " of " + std::to_string(room.height) + ")");
+    check(side.y + side.height <= room.height - 20, "and so does the sidebar (" + std::to_string(side.y + side.height) + ")");
+    check(ex.sidebar_limit() > 0, "the sidebar has more than fits (" + std::to_string(int(ex.sidebar_limit())) + " over)");
+    window.impl()->on_input(vui::scroll_event_t{0, -2, ui_test_at(scope, side.x + side.width / 2.0, side.y + side.height / 2.0)});
+    co_await ui_test_pause(loop, 80);
+    check(ex.sidebar_scroll > 0, "and the wheel scrolls it (" + std::to_string(int(ex.sidebar_scroll)) + ")");
+  }
+  window.impl()->on_close_request();
+}
+
 int ui_test_main()
 {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -3061,6 +3126,20 @@ int ui_test_main()
       co_await ui::run(*window, explorer_t{scratch});
       co_await std::move(test);
       co_await std::move(closing);
+
+      auto short_window = vui::window_t::create(*display, {.title = "vui explorer test, short", .size = {900, 360}});
+      if (!short_window)
+        co_return 1;
+      auto closing_small = [](vui::window_t &window) -> vio::task_t<void>
+      {
+        auto requests = window.subscribe<vui::close_request_t>();
+        co_await requests;
+        window.close();
+      }(*short_window);
+      auto test_small = ui_test_small(loop, *short_window, failures);
+      co_await ui::run(*short_window, explorer_t{scratch});
+      co_await std::move(test_small);
+      co_await std::move(closing_small);
       co_return 0;
     });
   std::error_code error;

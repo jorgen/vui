@@ -967,3 +967,16 @@ is on top of the screen. It checks selection by mouse and keyboard, the menu on 
 deleting three items, and dragging and resetting the Name column, reading state back through a
 hook the explorer sets while it runs. It caught a test of its own reading the cursor before the
 click was processed, and runs under X11, Wayland, macOS and Windows.
+
+## G64. A short window shrinks the explorer's panes; laid_out() for what a clip hides
+
+Shrinking the window pushed the status bar off the bottom: the row holding the sidebar, the list
+and the details is as tall as its tallest natural child, and the sidebar's natural height is every
+place and drive. The sidebar and the details pane are now clipping boxes with a small height of
+their own (G50: a clip box with a size does not grow to fit its children), the list's minimum is two
+rows, and the sidebar scrolls with the wheel, with a thin thumb when it has more than fits.
+
+Scrolling needs the height of what is hidden, and `bounds()` is cut to the clip by design, so
+`pressable_t::laid_out()` reports the box whole, where layout put it. `--ui-test` opens a second,
+short window and checks that the list and the sidebar end above the status bar and that the wheel
+scrolls the sidebar.

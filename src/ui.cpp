@@ -467,7 +467,7 @@ public:
       if (popup.slot->dismiss)
       {
         popup.backdrop.events = *popup.slot->dismiss;
-        _items.push_back(draw_item_t{rect_t{0, 0, _logical.width, _logical.height}, {}, &popup.backdrop, popup.slot, -1});
+        _items.push_back(draw_item_t{rect_t{0, 0, _logical.width, _logical.height}, {}, &popup.backdrop, popup.slot, -1, rect_t{0, 0, _logical.width, _logical.height}});
       }
       const auto first = _items.size();
       collect_items(*popup.slot, popup.x, popup.y, popup.s);
@@ -1632,13 +1632,17 @@ private:
       if (!entry.box || (!every_box && !entry.box->events.source && !entry.box->on_press))
         continue;
       const auto &box = *entry.box;
-      const clip_rect_t edges = intersect(clip, {x + entry.x * s, y + entry.y * s, x + (entry.x + entry.prim.width) * s, y + (entry.y + entry.prim.height) * s});
+      const clip_rect_t full{x + entry.x * s, y + entry.y * s, x + (entry.x + entry.prim.width) * s, y + (entry.y + entry.prim.height) * s};
+      const clip_rect_t edges = intersect(clip, full);
       if (empty(edges))
         continue;
       const int left = int(std::lround(edges[0]));
       const int top = int(std::lround(edges[1]));
       const rect_t rect{left, top, int(std::lround(edges[2])) - left, int(std::lround(edges[3])) - top};
-      _items.push_back(draw_item_t{rect, box.color, &box, &slot, entry.ordinal});
+      const int whole_left = int(std::lround(full[0]));
+      const int whole_top = int(std::lround(full[1]));
+      const rect_t whole{whole_left, whole_top, int(std::lround(full[2])) - whole_left, int(std::lround(full[3])) - whole_top};
+      _items.push_back(draw_item_t{rect, box.color, &box, &slot, entry.ordinal, whole});
     }
   }
 
@@ -1653,9 +1657,10 @@ private:
       if (!source || source->_bounds_frame == _bounds_frame)
         continue;
       source->_bounds_frame = _bounds_frame;
-      if (source->_bounds != item.rect)
+      if (source->_bounds != item.rect || source->_laid_out != item.whole)
       {
         source->_bounds = item.rect;
+        source->_laid_out = item.whole;
         invalidate(*item.slot);
       }
     }

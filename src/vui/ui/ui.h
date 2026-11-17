@@ -513,6 +513,12 @@ public:
   {
     return _bounds;
   }
+  // The same box where layout put it, whole, before any clip cut it (G64): how tall a list is that
+  // scrolls inside a smaller box. Its offset follows the scroll; its size is the content's.
+  [[nodiscard]] rect_t laid_out() const noexcept
+  {
+    return _laid_out;
+  }
 
 private:
   friend class detail::runtime_t;
@@ -523,6 +529,7 @@ private:
   bool _focused = false;
   bool _focus_visible = false;
   rect_t _bounds;
+  rect_t _laid_out;
   std::uint64_t _bounds_frame = 0;
 };
 
@@ -1874,6 +1881,8 @@ struct draw_item_t
   const box_t *box = nullptr;
   detail::slot_t *slot = nullptr;
   int ordinal = 0;
+  // `rect` before clipping.
+  rect_t whole;
 };
 
 // ---------------------------------------------------------------------------------------------
