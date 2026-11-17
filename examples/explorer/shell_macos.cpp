@@ -358,6 +358,58 @@ std::expected<picture_t, std::string> thumbnail(const std::string &path, int pix
   return out;
 }
 
+std::expected<pdf_page_t, std::string> pdf_page(const std::string &path, int page, int pixels)
+{
+  CFURLRef url = url_for(path);
+  if (!url)
+    return std::unexpected(std::string("cannot reach it"));
+  CGPDFDocumentRef document = CGPDFDocumentCreateWithURL(url);
+  CFRelease(url);
+  if (!document)
+    return std::unexpected(std::string("not a PDF Core Graphics can read"));
+  if (!CGPDFDocumentIsUnlocked(document))
+  {
+    CGPDFDocumentRelease(document);
+    return std::unexpected(std::string("the PDF is locked with a password"));
+  }
+  pdf_page_t out;
+  out.pages = int(CGPDFDocumentGetNumberOfPages(document));
+  if (out.pages <= 0)
+  {
+    CGPDFDocumentRelease(document);
+    return std::unexpected(std::string("the PDF has no pages"));
+  }
+  out.page = std::clamp(page, 0, out.pages - 1);
+  CGPDFPageRef pdf_page = CGPDFDocumentGetPage(document, std::size_t(out.page) + 1);
+  // The crop box, turned as the page says it is shown.
+  const CGRect box = CGPDFPageGetBoxRect(pdf_page, kCGPDFCropBox);
+  const int rotation = ((CGPDFPageGetRotationAngle(pdf_page) % 360) + 360) % 360;
+  const bool sideways = rotation == 90 || rotation == 270;
+  const double w = sideways ? box.size.height : box.size.width;
+  const double h = sideways ? box.size.width : box.size.height;
+  const double scale = double(pixels) / std::max(1.0, std::max(w, h));
+  out.picture.width = std::max(1, int(w * scale));
+  out.picture.height = std::max(1, int(h * scale));
+  out.picture.rgba.assign(std::size_t(out.picture.width) * out.picture.height * 4, 255);
+  CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef context = CGBitmapContextCreate(out.picture.rgba.data(), std::size_t(out.picture.width), std::size_t(out.picture.height), 8, std::size_t(out.picture.width) * 4, srgb,
+                                               kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+  CGColorSpaceRelease(srgb);
+  if (!context)
+  {
+    CGPDFDocumentRelease(document);
+    return std::unexpected(std::string("could not draw the page"));
+  }
+  // White under it, as a viewer shows paper; the page's own transform fits it, rotation and all.
+  CGContextSetRGBFillColor(context, 1, 1, 1, 1);
+  CGContextFillRect(context, CGRectMake(0, 0, out.picture.width, out.picture.height));
+  CGContextConcatCTM(context, CGPDFPageGetDrawingTransform(pdf_page, kCGPDFCropBox, CGRectMake(0, 0, out.picture.width, out.picture.height), 0, true));
+  CGContextDrawPDFPage(context, pdf_page);
+  CGContextRelease(context);
+  CGPDFDocumentRelease(document);
+  return out;
+}
+
 std::expected<void, std::string> trash(const std::string &path)
 {
   // The File Manager's move to the Trash: deprecated in favour of NSFileManager, which would need

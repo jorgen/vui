@@ -328,14 +328,21 @@ std::expected<picture_t, std::string> load_png(const std::string &file)
 
 // Runs a thumbnailer and waits for it, five seconds at most: it is a program the system installed,
 // but it parses a file nobody vouched for, and a hung one must not hold the explorer's helper.
-bool run_and_wait(const std::vector<std::string> &argv)
+// `output`, when given, is the file its standard output goes to.
+bool run_and_wait(const std::vector<std::string> &argv, const char *output = nullptr)
 {
   std::vector<char *> args;
   for (const auto &a : argv)
     args.push_back(const_cast<char *>(a.c_str()));
   args.push_back(nullptr);
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  if (output)
+    posix_spawn_file_actions_addopen(&actions, 1, output, O_WRONLY | O_CREAT | O_TRUNC, 0600);
   pid_t pid = 0;
-  if (posix_spawnp(&pid, args[0], nullptr, nullptr, args.data(), environ) != 0)
+  const int spawned = posix_spawnp(&pid, args[0], &actions, nullptr, args.data(), environ);
+  posix_spawn_file_actions_destroy(&actions);
+  if (spawned != 0)
     return false;
   for (int waited = 0; waited < 500; ++waited)
   {
@@ -810,6 +817,50 @@ std::expected<picture_t, std::string> thumbnail(const std::string &path, int pix
     }
   }
   return std::unexpected(std::string("no thumbnail"));
+}
+
+// poppler's tools, which every distribution packages: pdfinfo counts the pages and pdftoppm draws
+// one. Each runs with the same five seconds a thumbnailer gets.
+std::expected<pdf_page_t, std::string> pdf_page(const std::string &path, int page, int pixels)
+{
+  if (!on_path("pdftoppm") || !on_path("pdfinfo"))
+    return std::unexpected(std::string("pdftoppm is not installed"));
+  char info_name[] = "/tmp/vui-pdfinfo-XXXXXX";
+  const int info_fd = mkstemp(info_name);
+  if (info_fd < 0)
+    return std::unexpected(std::string("no room for a temporary file"));
+  ::close(info_fd);
+  pdf_page_t out;
+  if (run_and_wait({"pdfinfo", path}, info_name))
+  {
+    std::ifstream in(info_name);
+    for (std::string line; std::getline(in, line);)
+    {
+      if (line.rfind("Pages:", 0) == 0)
+        out.pages = std::atoi(line.c_str() + 6);
+    }
+  }
+  ::unlink(info_name);
+  if (out.pages <= 0)
+    return std::unexpected(std::string("not a PDF poppler can read"));
+  out.page = std::clamp(page, 0, out.pages - 1);
+  char picture_name[] = "/tmp/vui-pdfpage-XXXXXX";
+  const int picture_fd = mkstemp(picture_name);
+  if (picture_fd < 0)
+    return std::unexpected(std::string("no room for a temporary file"));
+  ::close(picture_fd);
+  // -singlefile writes <prefix>.png, without the page number pdftoppm otherwise adds.
+  const std::string prefix = picture_name;
+  const auto number = std::to_string(out.page + 1);
+  std::expected<picture_t, std::string> picture = std::unexpected(std::string("pdftoppm could not draw the page"));
+  if (run_and_wait({"pdftoppm", "-f", number, "-l", number, "-singlefile", "-png", "-scale-to", std::to_string(pixels), path, prefix}))
+    picture = load_png(prefix + ".png");
+  ::unlink((prefix + ".png").c_str());
+  ::unlink(picture_name);
+  if (!picture)
+    return std::unexpected(picture.error());
+  out.picture = std::move(*picture);
+  return out;
 }
 
 std::expected<void, std::string> trash(const std::string &path)

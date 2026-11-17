@@ -108,6 +108,18 @@ struct picture_t
 };
 [[nodiscard]] std::expected<picture_t, std::string> thumbnail(const std::string &path, int pixels);
 
+// One page of a PDF drawn by the system's own renderer (G61), on white, no larger than `pixels` on its
+// longer side, and how many pages there are: Windows.Data.Pdf on Windows, Core Graphics on macOS,
+// poppler's pdftoppm on Linux when it is installed. `page` counts from 0 and is clamped. Slow: call
+// it on a worker.
+struct pdf_page_t
+{
+  picture_t picture;
+  int page = 0;
+  int pages = 0;
+};
+[[nodiscard]] std::expected<pdf_page_t, std::string> pdf_page(const std::string &path, int page, int pixels);
+
 // An archive tool the system has (G59): found once, best first. `program` is its command line, used
 // to extract and compress; `gui` is its own window, to open an archive in, when it has one.
 struct archiver_t

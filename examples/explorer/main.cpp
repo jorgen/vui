@@ -1180,6 +1180,13 @@ struct explorer_t
   std::shared_ptr<const ui::image_data_t> preview_image;
   std::unordered_map<std::string, std::shared_ptr<const ui::image_data_t>> thumbnails;
   std::deque<std::string> thumbnail_order;
+  // A PDF's pages (G61): which file the preview shows, how many pages it has once that is known, and
+  // which one is drawn. Its pages share the thumbnail cache, keyed by page.
+  std::string preview_file;
+  std::string preview_key;
+  int pdf_pages = 0;
+  int pdf_page = 0;
+  ui::pressable_t pdf_previous, pdf_next;
 
   // The path bar while it is a field: what is typed in it, and whether it has had focus yet -- losing
   // focus after that puts the breadcrumbs back. Mutable because the view is where focus is seen.
@@ -1568,6 +1575,94 @@ struct explorer_t
       });
   }
 
+  static std::shared_ptr<const ui::image_data_t> image_of(shell::picture_t picture)
+  {
+    auto data = std::make_shared<ui::image_data_t>();
+    data->width = picture.width;
+    data->height = picture.height;
+    data->rgba = std::move(picture.rgba);
+    return data;
+  }
+
+  void keep_thumbnail(const std::string &key, const std::shared_ptr<const ui::image_data_t> &data)
+  {
+    if (!thumbnails.contains(key))
+      thumbnail_order.push_back(key);
+    thumbnails[key] = data;
+    while (thumbnail_order.size() > 64)
+    {
+      thumbnails.erase(thumbnail_order.front());
+      thumbnail_order.pop_front();
+    }
+  }
+
+  // A page of the PDF the preview shows: from the cache when it was drawn before, else drawn on the
+  // helper at about twice the pane's size, so it stays sharp on a high-density screen. When the
+  // system has no PDF renderer, its thumbnail is what is left.
+  void show_pdf_page(ui::scope_t &scope, int page)
+  {
+    const auto mine = preview_generation;
+    const auto file = preview_file;
+    const auto key = preview_key;
+    const auto pages_key = key + "|pages";
+    pdf_page = page;
+    if (auto cached = thumbnails.find(key + "|page " + std::to_string(page)), counted = thumbnails.find(pages_key); cached != thumbnails.end() && counted != thumbnails.end())
+    {
+      preview_image = cached->second;
+      pdf_pages = counted->second->width;
+      scope.invalidate();
+      return;
+    }
+    auto *p = pipe;
+    helper->post(
+      [this, p, file, key, pages_key, page, mine]
+      {
+        auto drawn = shell::pdf_page(file, page, 720);
+        if (!drawn)
+        {
+          auto picture = shell::thumbnail(file, 512);
+          p->post_event(
+            [this, mine, key, note = drawn.error(), data = picture ? image_of(std::move(*picture)) : nullptr](ui::scope_t &scope)
+            {
+              if (data)
+                keep_thumbnail(key, data);
+              if (preview_generation != mine)
+                return;
+              preview_image = data;
+              if (!data)
+                preview_note = note;
+              scope.invalidate();
+            });
+          return;
+        }
+        auto data = image_of(std::move(drawn->picture));
+        // The page count rides in the cache as an empty picture as wide as the count.
+        auto count = std::make_shared<ui::image_data_t>();
+        count->width = drawn->pages;
+        p->post_event(
+          [this, mine, page_key = key + "|page " + std::to_string(drawn->page), pages_key, data, count = std::shared_ptr<const ui::image_data_t>(std::move(count)), at = drawn->page](ui::scope_t &scope)
+          {
+            keep_thumbnail(page_key, data);
+            keep_thumbnail(pages_key, count);
+            if (preview_generation != mine)
+              return;
+            preview_image = data;
+            pdf_pages = count->width;
+            pdf_page = at;
+            scope.invalidate();
+          });
+      });
+  }
+
+  void turn_pdf_page(ui::scope_t &scope, int by)
+  {
+    if (pdf_pages <= 1)
+      return;
+    const int to = std::clamp(pdf_page + by, 0, pdf_pages - 1);
+    if (to != pdf_page)
+      show_pdf_page(scope, to);
+  }
+
   void preview_for(ui::scope_t &scope, long index)
   {
     const auto mine = ++preview_generation;
@@ -1588,8 +1683,15 @@ struct explorer_t
     auto *p = pipe;
     const auto file = shell::join(path, e.name);
     // The picture, from the cache or the system's thumbnailer; it wins over the text when there is one.
+    // A PDF is drawn by the system's PDF renderer instead, a page at a time.
     const auto key = file + "|" + std::to_string(e.modified);
-    if (auto cached = thumbnails.find(key); cached != thumbnails.end())
+    preview_file = file;
+    preview_key = key;
+    pdf_pages = 0;
+    pdf_page = 0;
+    if (extension_of(e.name) == ".pdf")
+      show_pdf_page(scope, 0);
+    else if (auto cached = thumbnails.find(key); cached != thumbnails.end())
       preview_image = cached->second;
     else
     {
@@ -1599,20 +1701,11 @@ struct explorer_t
           auto picture = shell::thumbnail(file, 512);
           if (!picture)
             return;
-          auto data = std::make_shared<ui::image_data_t>();
-          data->width = picture->width;
-          data->height = picture->height;
-          data->rgba = std::move(picture->rgba);
+          auto data = image_of(std::move(*picture));
           p->post_event(
-            [this, key, mine, data = std::shared_ptr<const ui::image_data_t>(std::move(data))](ui::scope_t &scope)
+            [this, key, mine, data](ui::scope_t &scope)
             {
-              thumbnail_order.push_back(key);
-              thumbnails[key] = data;
-              while (thumbnail_order.size() > 64)
-              {
-                thumbnails.erase(thumbnail_order.front());
-                thumbnail_order.pop_front();
-              }
+              keep_thumbnail(key, data);
               if (preview_generation == mine)
                 preview_image = data;
               scope.invalidate();
@@ -2118,7 +2211,14 @@ struct explorer_t
         p.children.push_back(ui::box_t{.color = clear,
                                        .align_x = ui::align_t::center,
                                        .children = {ui::image_t{.size = {int(w * fit), int(h * fit)}, .data = preview_image, .radius = 6}}});
-        p.children.push_back(muted(grouped(std::uint64_t(preview_image->width)) + " x " + grouped(std::uint64_t(preview_image->height)) + " thumbnail", 11));
+        if (pdf_pages > 0)
+          p.children.push_back(ui::row_t{.gap = 8,
+                                         .align = ui::align_t::center,
+                                         .children = {icon_button(pdf_previous, icons().back, pdf_page > 0), ui::spacer_t{},
+                                                      muted("Page " + grouped(std::uint64_t(pdf_page + 1)) + " of " + grouped(std::uint64_t(pdf_pages)), 11), ui::spacer_t{},
+                                                      icon_button(pdf_next, icons().forward, pdf_page + 1 < pdf_pages)}});
+        else
+          p.children.push_back(muted(grouped(std::uint64_t(preview_image->width)) + " x " + grouped(std::uint64_t(preview_image->height)) + " thumbnail", 11));
       }
       else
         p.children.push_back(ui::box_t{.color = clear, .grow = 1, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {ui::mount(preview, {.read_only = true, .columns = 30, .rows = 8})}});
@@ -2206,7 +2306,7 @@ struct explorer_t
         go(scope, start.empty() ? shell::home() : start, false);
     }
 
-    auto presses = ui::subscribe<ui::press_event_t>(back_button, forward_button, up_button, home_button, refresh_button);
+    auto presses = ui::subscribe<ui::press_event_t>(back_button, forward_button, up_button, home_button, refresh_button, pdf_previous, pdf_next);
     auto crumbs = ui::subscribe<ui::press_event_t>(crumb_buttons);
     auto places_pressed = ui::subscribe<ui::press_event_t>(place_buttons);
     auto filters = ui::subscribe<ui::line_edit_event_t>(filter_edit.changed);
@@ -2245,6 +2345,10 @@ struct explorer_t
           go(scope, shell::home());
         else if (source == &refresh_button)
           go(scope, path, false);
+        else if (source == &pdf_previous)
+          turn_pdf_page(scope, -1);
+        else if (source == &pdf_next)
+          turn_pdf_page(scope, 1);
         break;
       }
       case 1:
@@ -2406,6 +2510,8 @@ struct explorer_t
 
 int probe_and_check()
 {
+  // Unbuffered, so what was checked before a crash is still printed.
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
   shell::initialize();
   int failures = 0;
   const auto check = [&failures](bool ok, const std::string &what)
@@ -2509,6 +2615,64 @@ int probe_and_check()
     check(picture && picture->width > 0 && picture->height > 0 && picture->width >= picture->height && picture->rgba.size() == std::size_t(picture->width) * picture->height * 4,
           "a thumbnail of a picture" + (picture ? " (" + std::to_string(picture->width) + " x " + std::to_string(picture->height) + ")" : ": " + picture.error()));
 #endif
+  }
+  // PDF pages (G61), from a PDF the probe writes itself: a wide page with a red block and a tall one
+  // with a blue block. Required on Windows and macOS, which carry a renderer; on Linux only when
+  // poppler's pdftoppm is installed.
+  {
+    const std::vector<std::string> objects{
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 5 0 R >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 200] /Contents 6 0 R >>",
+      "<< /Length 25 >>\nstream\n1 0 0 rg 0 0 200 100 re f\nendstream",
+      "<< /Length 25 >>\nstream\n0 0 1 rg 0 0 100 200 re f\nendstream",
+    };
+    std::string pdf = "%PDF-1.4\n";
+    std::vector<std::size_t> offsets;
+    for (std::size_t i = 0; i < objects.size(); ++i)
+    {
+      offsets.push_back(pdf.size());
+      pdf += std::to_string(i + 1) + " 0 obj\n" + objects[i] + "\nendobj\n";
+    }
+    const auto xref = pdf.size();
+    pdf += "xref\n0 " + std::to_string(objects.size() + 1) + "\n0000000000 65535 f \n";
+    for (const auto offset : offsets)
+    {
+      char line[24];
+      std::snprintf(line, sizeof line, "%010zu 00000 n \n", offset);
+      pdf += line;
+    }
+    pdf += "trailer\n<< /Size " + std::to_string(objects.size() + 1) + " /Root 1 0 R >>\nstartxref\n" + std::to_string(xref) + "\n%%EOF\n";
+    const auto file = shell::join(scratch, "two pages.pdf");
+    std::ofstream(native(file), std::ios::binary) << pdf;
+    const auto drawing = clock_t_::now();
+    const auto first = shell::pdf_page(file, 0, 200);
+    const auto drawn_in = clock_t_::now() - drawing;
+    // Past the end is clamped to the last page.
+    const auto drawing_last = clock_t_::now();
+    const auto last = shell::pdf_page(file, 7, 200);
+    const auto last_in = clock_t_::now() - drawing_last;
+    const auto middle = [](const shell::picture_t &picture)
+    {
+      const auto at = (std::size_t(picture.height / 2) * std::size_t(picture.width) + std::size_t(picture.width / 2)) * 4;
+      return std::array<int, 3>{picture.rgba[at], picture.rgba[at + 1], picture.rgba[at + 2]};
+    };
+    const bool first_ok = first && first->pages == 2 && first->page == 0 && first->picture.width == 200 && first->picture.height >= 95 && first->picture.height <= 105 &&
+                          first->picture.rgba.size() == std::size_t(first->picture.width) * first->picture.height * 4 && middle(first->picture)[0] > 200 && middle(first->picture)[2] < 60;
+    const bool last_ok = last && last->page == 1 && last->picture.height == 200 && last->picture.width >= 95 && last->picture.width <= 105 && middle(last->picture)[2] > 200 &&
+                         middle(last->picture)[0] < 60;
+    const auto said = [](const std::expected<shell::pdf_page_t, std::string> &r)
+    { return r ? std::to_string(r->picture.width) + " x " + std::to_string(r->picture.height) + ", page " + std::to_string(r->page + 1) + " of " + std::to_string(r->pages) : r.error(); };
+#if defined(__linux__)
+    if (!first && first.error() == "pdftoppm is not installed")
+      std::printf("  (PDF pages not tried: pdftoppm is not installed)\n");
+    else
+#endif
+    {
+      check(first_ok, "the first page of a PDF (" + said(first) + ", " + ms(std::chrono::duration_cast<std::chrono::nanoseconds>(drawn_in)) + ")");
+      check(last_ok, "a page past the end is the last one (" + said(last) + ", " + ms(std::chrono::duration_cast<std::chrono::nanoseconds>(last_in)) + ")");
+    }
   }
   // Archives: every format some installed tool writes, packed and unpacked again, the contents
   // compared; and extracting again keeps a file that is there.

@@ -914,3 +914,24 @@ pointer that has a subscriber, so a pager inside a window can take them before t
 application that wants them anywhere puts a pressable on its outermost box, which costs nothing
 else, since presses fall through a pressable nobody listens to (G52). The explorer does that, and
 closes an open menu but leaves a delete question alone when one arrives.
+
+## G61. PDF pages in the preview, from the system's renderer
+
+The thumbnail (G57) gave a PDF a first page only where some application had registered a handler,
+and never the others. Each platform carries a PDF renderer, so the explorer draws pages itself:
+
+- **Windows:** Windows.Data.Pdf through C++/WinRT from the SDK (`windowsapp`, still nothing to
+  ship). It runs on a short-lived thread in the multithreaded apartment, because the helper is
+  single-threaded for the shell and C++/WinRT will not block on an operation there. Its destination
+  size is in device-independent units that it multiplies by the display's scale, so the first page
+  drawn measures that scale. **It must not stay loaded:** it keeps a Direct3D device that its own
+  DLL teardown releases at process exit, where Direct3D fails fast (0xC0000409; only with a window
+  up, so the probe alone never showed it). After each page the factory cache is cleared and
+  `CoFreeUnusedLibrariesEx(0, 0)` unloads it, at about 65 ms a page including the reload.
+- **macOS:** `CGPDFDocument`, drawn on white with the page's own transform, rotation included.
+- **Linux:** poppler's `pdfinfo` and `pdftoppm` when they are on the PATH, with the thumbnailers'
+  five seconds; otherwise the thumbnail, as before.
+
+The pane shows a page at about twice its size, with arrows and "Page n of m" under it; pages share
+the thumbnail cache, so turning back is immediate. The probe writes a two-page PDF (a wide red page,
+a tall blue one) and checks the size and colour of both, the second asked for past the end.
