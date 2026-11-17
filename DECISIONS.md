@@ -950,6 +950,10 @@ then it has a width of its own (at least 120, at most what leaves the others the
 past Size is empty, as in Explorer and Finder. A double click on the edge lets it fill again. The
 width is not remembered between runs.
 
+Every column has an edge now: Date, Type and Size are dragged between 48 and 600 and a double
+click puts each back to its own width; their cells clip, so a narrow column cuts its text rather
+than spilling into the next.
+
 ## G63. Multi-select in the explorer, and a test that drives the window
 
 The table keeps a flag per entry beside the current row (where the keyboard is) and an anchor. A

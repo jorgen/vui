@@ -664,13 +664,17 @@ public:
   {
     return _body.bounds();
   }
-  [[nodiscard]] ui::rect_t name_grip_bounds() const noexcept
+  [[nodiscard]] ui::rect_t grip_bounds(std::size_t c) const noexcept
   {
-    return _name_grip.bounds();
+    return _grips[c].bounds();
+  }
+  [[nodiscard]] int column_width(std::size_t c) const noexcept
+  {
+    return c == 0 ? name_column_width() : int(_widths[c]);
   }
   [[nodiscard]] int name_column_width() const noexcept
   {
-    return _name_width > 0 ? int(_name_width) : _headers[0].bounds().width;
+    return _widths[0] > 0 ? int(_widths[0]) : _headers[0].bounds().width;
   }
 
   // A new folder: what is known of it so far, nothing selected, at the top. `select` names what to
@@ -790,17 +794,17 @@ public:
                                           .grow = grows(c) ? 1.0f : 0.0f,
                                           .padding = {10, 0},
                                           .align_x = columns[c].right ? ui::align_t::end : ui::align_t::start,
-                                          .clip = c == 0 && _name_width > 0,
+                                          .clip = !grows(c),
                                           .children = {std::move(label)}});
-      // The Name column's right edge, dragged to size it; a double click lets it fill again.
-      if (c == 0)
-        header.children.push_back(ui::box_t{.size = {grip_width, 28},
-                                            .color = clear,
-                                            .events = _name_grip,
-                                            .cursor = vui::cursor_t::resize_horizontal,
-                                            .children = {ui::box_t{.size = {2, 16}, .color = _name_grip.held() || _name_grip.hovered() ? t.border_hovered : t.border, .radius = 1}}});
+      // Each column's right edge, dragged to size it; a double click puts it back: Name to filling
+      // what the others leave, the others to their own widths.
+      header.children.push_back(ui::box_t{.size = {grip_width, 28},
+                                          .color = clear,
+                                          .events = _grips[c],
+                                          .cursor = vui::cursor_t::resize_horizontal,
+                                          .children = {ui::box_t{.size = {2, 16}, .color = _grips[c].held() || _grips[c].hovered() ? t.border_hovered : t.border, .radius = 1}}});
     }
-    if (_name_width > 0)
+    if (_widths[0] > 0)
       header.children.push_back(ui::box_t{.color = clear, .grow = 1});
 
     const auto bounds = _body.bounds();
@@ -826,10 +830,9 @@ public:
       for (std::size_t c = 0; c < columns.size(); ++c)
       {
         cells.children.push_back(cell(c, e));
-        if (c == 0)
-          cells.children.push_back(ui::box_t{.size = {grip_width, int(row_height)}, .color = clear});
+        cells.children.push_back(ui::box_t{.size = {grip_width, int(row_height)}, .color = clear});
       }
-      if (_name_width > 0)
+      if (_widths[0] > 0)
         cells.children.push_back(ui::box_t{.color = clear, .grow = 1});
       body.children.push_back(ui::at_t{.x = 0,
                                        .y = float(i) * row_height - top,
@@ -854,11 +857,12 @@ public:
   {
     auto heads = ui::subscribe<ui::press_event_t>(_headers);
     auto keys = ui::subscribe<ui::typing_event_t>(_body);
-    auto drags = ui::subscribe<ui::drag_event_t>(_body, _thumb, _name_grip);
+    auto drags = ui::subscribe<ui::drag_event_t>(_body, _thumb);
     auto wheels = ui::subscribe<ui::wheel_event_t>(_body, _thumb);
     auto hovers = ui::subscribe<ui::hover_event_t>(_body);
     auto menus = ui::subscribe<ui::context_event_t>(_body);
-    auto events = ui::merge(scope, heads, keys, drags, wheels, hovers, menus);
+    auto grips = ui::subscribe<ui::drag_event_t>(_grips);
+    auto events = ui::merge(scope, heads, keys, drags, wheels, hovers, menus, grips);
     while (auto event = co_await events)
     {
       const float height = std::max(float(_body.bounds().height), row_height);
@@ -884,33 +888,6 @@ public:
       case 2:
       {
         const auto &drag = std::get<2>(*event);
-        if (drag.source == &_name_grip)
-        {
-          if (drag.phase == ui::drag_phase_t::begin && drag.clicks == 2)
-          {
-            _name_width = 0;
-            _grip_dragging = false;
-          }
-          else if (drag.phase == ui::drag_phase_t::begin)
-          {
-            _grip_from = float(drag.position.x);
-            _grip_width = _name_width > 0 ? _name_width : float(_headers[0].bounds().width);
-            _grip_dragging = true;
-          }
-          // The release counts as the last move: moves can be dropped on the way, the release never is.
-          else if (_grip_dragging && (drag.phase == ui::drag_phase_t::move || float(drag.position.x) != _grip_from))
-          {
-            if (drag.phase == ui::drag_phase_t::end)
-              _grip_dragging = false;
-            // At least room for a short name; at most what leaves the other columns their room.
-            int others = grip_width;
-            for (std::size_t c = 1; c < columns.size(); ++c)
-              others += columns[c].width;
-            const float most = std::max(float(min_name_width), float(_body.bounds().width - others));
-            _name_width = std::clamp(_grip_width + float(drag.position.x) - _grip_from, float(min_name_width), most);
-          }
-          break;
-        }
         if (drag.source == &_thumb)
         {
           const float content = float(order().size()) * row_height;
@@ -944,6 +921,9 @@ public:
         _hovered = hover.inside ? int(row_at(hover.position.y)) : -1;
         break;
       }
+      case 6:
+        grip_drag(std::get<6>(*event));
+        break;
       case 5:
       {
         const auto &menu = std::get<5>(*event);
@@ -963,6 +943,40 @@ public:
       }
       }
       _scroll = clamped(height);
+    }
+  }
+
+  // A column's edge dragged, or double-clicked to put the column back.
+  void grip_drag(const ui::drag_event_t &drag)
+  {
+    const auto c = std::size_t(drag.source - &_grips[0]);
+    if (drag.phase == ui::drag_phase_t::begin && drag.clicks == 2)
+    {
+      _widths[c] = c == 0 ? 0.0f : float(columns[c].width);
+      _grip_column = -1;
+    }
+    else if (drag.phase == ui::drag_phase_t::begin)
+    {
+      _grip_from = float(drag.position.x);
+      _grip_width = float(column_width(c));
+      _grip_column = int(c);
+    }
+    // The release counts as the last move: moves can be dropped on the way, the release never is.
+    else if (_grip_column == int(c) && (drag.phase == ui::drag_phase_t::move || float(drag.position.x) != _grip_from))
+    {
+      if (drag.phase == ui::drag_phase_t::end)
+        _grip_column = -1;
+      const float wanted = _grip_width + float(drag.position.x) - _grip_from;
+      if (c == 0)
+      {
+        // At least room for a short name; at most what leaves the other columns their room.
+        int others = int(columns.size()) * grip_width;
+        for (std::size_t k = 1; k < columns.size(); ++k)
+          others += int(_widths[k]);
+        _widths[0] = std::clamp(wanted, float(min_name_width), std::max(float(min_name_width), float(_body.bounds().width - others)));
+      }
+      else
+        _widths[c] = std::clamp(wanted, float(min_column_width), float(max_column_width));
     }
   }
 
@@ -989,15 +1003,17 @@ private:
   static constexpr float row_height = 26;
   static constexpr int grip_width = 8;
   static constexpr int min_name_width = 120;
+  static constexpr int min_column_width = 48;
+  static constexpr int max_column_width = 600;
 
   // The Name column fills what the others leave until it is dragged to a width of its own.
   [[nodiscard]] int width_of(std::size_t c) const noexcept
   {
-    return c == 0 ? int(_name_width) : columns[c].width;
+    return int(_widths[c]);
   }
   [[nodiscard]] bool grows(std::size_t c) const noexcept
   {
-    return c == 0 && _name_width <= 0;
+    return c == 0 && _widths[0] <= 0;
   }
   inline static const std::array<column_t, 4> columns{{{"Name", 0, false}, {"Date modified", 136, false}, {"Type", 140, false}, {"Size", 84, true}}};
 
@@ -1040,13 +1056,14 @@ private:
   {
     const auto &t = ui::theme();
     const auto &column = columns[c];
-    ui::box_t box{.size = {width_of(c), int(row_height)}, .color = clear, .grow = grows(c) ? 1.0f : 0.0f, .padding = {10, 0}, .align_x = column.right ? ui::align_t::end : ui::align_t::start};
+    // Clipped, so a column made narrow cuts its text rather than spilling into the next.
+    ui::box_t box{.size = {width_of(c), int(row_height)}, .color = clear, .grow = grows(c) ? 1.0f : 0.0f, .padding = {10, 0}, .align_x = column.right ? ui::align_t::end : ui::align_t::start, .clip = !grows(c)};
     const auto ink = e.hidden ? t.text_muted : t.text;
     switch (c)
     {
     case 0:
       box.clip = true;
-      box.size.width = _name_width > 0 ? int(_name_width) : 140;
+      box.size.width = _widths[0] > 0 ? int(_widths[0]) : 140;
       box.children.push_back(ui::row_t{.gap = 8,
                                        .align = ui::align_t::center,
                                        .children = {ui::icon_t{.path = e.directory ? icons().folder : icons().file, .size = 16, .color = faded(e.directory ? folder_color : file_color, e.hidden ? 0.5f : 1.0f)},
@@ -1343,12 +1360,13 @@ private:
   std::array<ui::pressable_t, 4> _headers;
   ui::pressable_t _body{ui::text_input};
   ui::pressable_t _thumb;
-  ui::pressable_t _name_grip;
-  // 0 while the Name column fills; its width once dragged, and where the drag started.
-  float _name_width = 0;
+  // Each column's right edge, and its width: Name's is 0 while it fills what the others leave.
+  // Which edge is being dragged, from where, and the width it had then.
+  std::array<ui::pressable_t, 4> _grips;
+  std::array<float, 4> _widths{0, float(columns[1].width), float(columns[2].width), float(columns[3].width)};
+  int _grip_column = -1;
   float _grip_from = 0;
   float _grip_width = 0;
-  bool _grip_dragging = false;
   int _sort = 0;
   bool _descending = false;
   float _scroll = 0;
@@ -3222,7 +3240,7 @@ vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::s
 
     // The Name column's edge, dragged 100 to the left, and a double click on it to fill again.
     const int before = ex.table.name_column_width();
-    const auto grip = ex.table.name_grip_bounds();
+    const auto grip = ex.table.grip_bounds(0);
     const double gx = grip.x + grip.width / 2.0, gy = grip.y + grip.height / 2.0;
     window.impl()->on_input(vui::pointer_move_event_t{ui_test_at(scope, gx, gy)});
     window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, ui_test_at(scope, gx, gy)});
@@ -3239,16 +3257,36 @@ vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::s
     // The pointer onto the edge where it is now, until the frame that moved it has been drawn.
     for (int i = 0; i < 25 && window.cursor() != vui::cursor_t::resize_horizontal; ++i)
     {
-      const auto edge = ex.table.name_grip_bounds();
+      const auto edge = ex.table.grip_bounds(0);
       window.impl()->on_input(vui::pointer_move_event_t{ui_test_at(scope, edge.x + edge.width / 2.0, edge.y + edge.height / 2.0)});
       co_await ui_test_pause(loop, 20);
     }
     check(window.cursor() == vui::cursor_t::resize_horizontal, "over the edge it is the resize arrow");
-    const auto moved = ex.table.name_grip_bounds();
+    const auto moved = ex.table.grip_bounds(0);
     ui_test_click(window, ui_test_at(scope, moved.x + moved.width / 2.0, moved.y + moved.height / 2.0));
     ui_test_click(window, ui_test_at(scope, moved.x + moved.width / 2.0, moved.y + moved.height / 2.0));
     co_await ui_test_pause(loop, 120);
     check(ex.table.name_column_width() == before, "a double click lets it fill again (" + std::to_string(ex.table.name_column_width()) + ")");
+
+    // The Type column's edge, 60 wider; a double click puts it back.
+    {
+      co_await ui_test_pause(loop, 550);
+      const int type_before = ex.table.column_width(2);
+      const auto edge = ex.table.grip_bounds(2);
+      const double ex_ = edge.x + edge.width / 2.0, ey = edge.y + edge.height / 2.0;
+      window.impl()->on_input(vui::pointer_move_event_t{ui_test_at(scope, ex_, ey)});
+      window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, ui_test_at(scope, ex_, ey)});
+      window.impl()->on_input(vui::pointer_move_event_t{ui_test_at(scope, ex_ + 30, ey)});
+      window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, ui_test_at(scope, ex_ + 60, ey)});
+      co_await ui_test_pause(loop, 120);
+      check(std::abs(ex.table.column_width(2) - (type_before + 60)) <= 1, "dragging the Type column's edge sizes it (" + std::to_string(type_before) + " to " + std::to_string(ex.table.column_width(2)) + ")");
+      co_await ui_test_pause(loop, 550);
+      const auto moved_edge = ex.table.grip_bounds(2);
+      ui_test_click(window, ui_test_at(scope, moved_edge.x + moved_edge.width / 2.0, moved_edge.y + moved_edge.height / 2.0));
+      ui_test_click(window, ui_test_at(scope, moved_edge.x + moved_edge.width / 2.0, moved_edge.y + moved_edge.height / 2.0));
+      co_await ui_test_pause(loop, 120);
+      check(ex.table.column_width(2) == type_before, "a double click puts it back (" + std::to_string(ex.table.column_width(2)) + ")");
+    }
   }
   window.impl()->on_close_request();
 }
