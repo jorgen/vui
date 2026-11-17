@@ -887,14 +887,21 @@ public:
         if (drag.source == &_name_grip)
         {
           if (drag.phase == ui::drag_phase_t::begin && drag.clicks == 2)
+          {
             _name_width = 0;
+            _grip_dragging = false;
+          }
           else if (drag.phase == ui::drag_phase_t::begin)
           {
             _grip_from = float(drag.position.x);
             _grip_width = _name_width > 0 ? _name_width : float(_headers[0].bounds().width);
+            _grip_dragging = true;
           }
-          else if (drag.phase == ui::drag_phase_t::move)
+          // The release counts as the last move: moves can be dropped on the way, the release never is.
+          else if (_grip_dragging && (drag.phase == ui::drag_phase_t::move || float(drag.position.x) != _grip_from))
           {
+            if (drag.phase == ui::drag_phase_t::end)
+              _grip_dragging = false;
             // At least room for a short name; at most what leaves the other columns their room.
             int others = grip_width;
             for (std::size_t c = 1; c < columns.size(); ++c)
@@ -1341,6 +1348,7 @@ private:
   float _name_width = 0;
   float _grip_from = 0;
   float _grip_width = 0;
+  bool _grip_dragging = false;
   int _sort = 0;
   bool _descending = false;
   float _scroll = 0;
@@ -3186,6 +3194,10 @@ vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::s
     expect("sub,a.txt,b.txt,c.txt,d.txt,e.txt,f.txt", "Ctrl+A selects everything");
     co_await ui_test_pause(loop, 550);
     ui_test_click(window, row(1));
+    // A click and keys reach the table through different subscriptions, which ui::merge takes
+    // turns between; a person never presses a key in the same instant as a click, so neither does
+    // the test.
+    co_await ui_test_pause(loop, 80);
     ui_test_key(window, vui::key_t::down, vui::modifier_t::shift);
     ui_test_key(window, vui::key_t::down, vui::modifier_t::shift);
     co_await ui_test_pause(loop, 80);
@@ -3224,10 +3236,16 @@ vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::s
     check(by > 0 && std::abs(after - (before - by)) <= 1, "dragging the Name column's edge sizes it (" + std::to_string(before) + " to " + std::to_string(after) + ")");
     check(window.cursor() == vui::cursor_t::arrow, "the pointer is the arrow again off the edge");
     co_await ui_test_pause(loop, 550);
+    // The pointer onto the edge where it is now, until the frame that moved it has been drawn.
+    for (int i = 0; i < 25 && window.cursor() != vui::cursor_t::resize_horizontal; ++i)
+    {
+      const auto edge = ex.table.name_grip_bounds();
+      window.impl()->on_input(vui::pointer_move_event_t{ui_test_at(scope, edge.x + edge.width / 2.0, edge.y + edge.height / 2.0)});
+      co_await ui_test_pause(loop, 20);
+    }
+    check(window.cursor() == vui::cursor_t::resize_horizontal, "over the edge it is the resize arrow");
     const auto moved = ex.table.name_grip_bounds();
     ui_test_click(window, ui_test_at(scope, moved.x + moved.width / 2.0, moved.y + moved.height / 2.0));
-    co_await ui_test_pause(loop, 40);
-    check(window.cursor() == vui::cursor_t::resize_horizontal, "over the edge it is the resize arrow");
     ui_test_click(window, ui_test_at(scope, moved.x + moved.width / 2.0, moved.y + moved.height / 2.0));
     co_await ui_test_pause(loop, 120);
     check(ex.table.name_column_width() == before, "a double click lets it fill again (" + std::to_string(ex.table.name_column_width()) + ")");
