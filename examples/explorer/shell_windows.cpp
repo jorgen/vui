@@ -353,10 +353,20 @@ std::vector<handler_t> handlers(const std::string &path)
   return out;
 }
 
+// As a double click in Explorer does: the file's default verb, started in the file's folder. Left
+// unset, a program would start in whatever folder the explorer itself was started in -- System32,
+// when Windows starts it for Win+E -- and one that finds its files beside it would not start.
 std::expected<void, std::string> open(const std::string &path)
 {
-  const auto r = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", wide(path).c_str(), nullptr, nullptr, SW_SHOWNORMAL));
-  if (r <= 32)
+  const auto file = wide(path);
+  const auto folder = wide(parent(path));
+  SHELLEXECUTEINFOW info{};
+  info.cbSize = sizeof info;
+  info.fMask = SEE_MASK_NOASYNC;
+  info.lpFile = file.c_str();
+  info.lpDirectory = folder.empty() ? nullptr : folder.c_str();
+  info.nShow = SW_SHOWNORMAL;
+  if (!ShellExecuteExW(&info))
     return std::unexpected(error_text(GetLastError()));
   return {};
 }

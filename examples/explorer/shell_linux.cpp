@@ -664,9 +664,11 @@ std::vector<handler_t> handlers(const std::string &path)
   return out;
 }
 
+// Started in the file's folder, as a file manager does, so a program that finds its files beside
+// it finds them.
 std::expected<void, std::string> open(const std::string &path)
 {
-  return spawn({"xdg-open", path});
+  return spawn({"xdg-open", path}, parent(path));
 }
 
 std::expected<void, std::string> open_with(const std::string &path, const handler_t &handler)
@@ -674,7 +676,7 @@ std::expected<void, std::string> open_with(const std::string &path, const handle
   for (const auto &app : applications())
   {
     if (app.path == handler.id)
-      return spawn(command_for(app.exec, path));
+      return spawn(command_for(app.exec, path), parent(path));
   }
   return std::unexpected(handler.name + " is no longer installed");
 }
