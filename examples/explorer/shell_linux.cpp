@@ -679,8 +679,57 @@ std::expected<void, std::string> open_with(const std::string &path, const handle
   return std::unexpected(handler.name + " is no longer installed");
 }
 
-std::expected<void, std::string> open_terminal(const std::string &folder)
+std::string terminal_name()
 {
+  if (on_path("wezterm"))
+    return "WezTerm";
+  if (const auto t = env("TERMINAL"); !t.empty())
+    return t;
+  return "terminal";
+}
+
+bool can_elevate()
+{
+  return false;
+}
+
+bool is_program(const std::string &)
+{
+  return false;
+}
+
+std::expected<void, std::string> run_elevated(const std::string &)
+{
+  return std::unexpected(std::string("running as administrator is a Windows feature"));
+}
+
+bool can_be_default()
+{
+  return false;
+}
+
+bool is_default()
+{
+  return false;
+}
+
+std::expected<void, std::string> make_default()
+{
+  return std::unexpected(std::string("only on Windows"));
+}
+
+std::expected<void, std::string> restore_default()
+{
+  return std::unexpected(std::string("only on Windows"));
+}
+
+std::expected<void, std::string> open_terminal(const std::string &folder, bool elevated)
+{
+  if (elevated)
+    return std::unexpected(std::string("running as administrator is a Windows feature"));
+  // WezTerm first, which opens the shell its configuration names.
+  if (on_path("wezterm"))
+    return spawn({"wezterm", "start", "--cwd", folder}, folder);
   std::vector<std::string> candidates;
   if (const auto t = env("TERMINAL"); !t.empty())
     candidates.push_back(t);

@@ -297,9 +297,69 @@ std::expected<void, std::string> open_with(const std::string &path, const handle
   return run({"/usr/bin/open", "-a", handler.id, path});
 }
 
-std::expected<void, std::string> open_terminal(const std::string &folder)
+namespace
 {
+// WezTerm's app bundle, wherever the app was put.
+std::string wezterm()
+{
+  for (const std::string app : {std::string("/Applications/WezTerm.app"), std::string(std::getenv("HOME") ? std::getenv("HOME") : "") + "/Applications/WezTerm.app"})
+  {
+    if (access((app + "/Contents/MacOS/wezterm").c_str(), X_OK) == 0)
+      return app;
+  }
+  return {};
+}
+} // namespace
+
+std::string terminal_name()
+{
+  return wezterm().empty() ? "Terminal" : "WezTerm";
+}
+
+std::expected<void, std::string> open_terminal(const std::string &folder, bool elevated)
+{
+  if (elevated)
+    return std::unexpected(std::string("running as administrator is a Windows feature"));
+  // WezTerm first, which opens the shell its configuration names.
+  // Through open, which returns at once; -n makes a new instance take the arguments.
+  if (const auto w = wezterm(); !w.empty())
+    return run({"/usr/bin/open", "-na", w, "--args", "start", "--cwd", folder});
   return run({"/usr/bin/open", "-a", "Terminal", folder});
+}
+
+bool can_elevate()
+{
+  return false;
+}
+
+bool is_program(const std::string &)
+{
+  return false;
+}
+
+std::expected<void, std::string> run_elevated(const std::string &)
+{
+  return std::unexpected(std::string("running as administrator is a Windows feature"));
+}
+
+bool can_be_default()
+{
+  return false;
+}
+
+bool is_default()
+{
+  return false;
+}
+
+std::expected<void, std::string> make_default()
+{
+  return std::unexpected(std::string("only on Windows"));
+}
+
+std::expected<void, std::string> restore_default()
+{
+  return std::unexpected(std::string("only on Windows"));
 }
 
 std::expected<void, std::string> reveal(const std::string &path)

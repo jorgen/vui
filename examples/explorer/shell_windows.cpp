@@ -22,6 +22,8 @@
 #include <shobjidl.h>
 
 #include <algorithm>
+#include <cwchar>
+#include <optional>
 #include <cwctype>
 #include <mutex>
 #include <unordered_map>
@@ -389,16 +391,301 @@ std::expected<void, std::string> open_with(const std::string &path, const handle
   return std::unexpected(handler.name + " no longer opens " + ext);
 }
 
-std::expected<void, std::string> open_terminal(const std::string &folder)
+namespace
 {
-  // Windows Terminal when it is there, the console host otherwise.
+bool file_there(const std::wstring &path)
+{
+  const DWORD attributes = GetFileAttributesW(path.c_str());
+  return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+std::wstring environment(const wchar_t *name)
+{
+  wchar_t buffer[MAX_PATH] = {};
+  const DWORD n = GetEnvironmentVariableW(name, buffer, MAX_PATH);
+  return n > 0 && n < MAX_PATH ? std::wstring(buffer) : std::wstring();
+}
+
+// One argument as CommandLineToArgvW reads it back: quoted, the backslashes before a quote doubled,
+// so "C:\" stays a path and does not swallow the quote after it.
+std::wstring quoted(const std::wstring &arg)
+{
+  std::wstring out = L"\"";
+  std::size_t slashes = 0;
+  for (const wchar_t c : arg)
+  {
+    if (c == L'\\')
+    {
+      ++slashes;
+      continue;
+    }
+    out.append(c == L'"' ? slashes * 2 + 1 : slashes, L'\\');
+    slashes = 0;
+    out += c;
+  }
+  out.append(slashes * 2, L'\\');
+  return out + L"\"";
+}
+
+// WezTerm's window program: on the PATH, or where its installer, a per-user install or Scoop put it.
+const std::wstring &wezterm()
+{
+  static const std::wstring found = []
+  {
+    wchar_t path[MAX_PATH] = {};
+    if (SearchPathW(nullptr, L"wezterm-gui.exe", nullptr, MAX_PATH, path, nullptr) > 0)
+      return std::wstring(path);
+    for (const auto &candidate : {environment(L"ProgramW6432") + L"\\WezTerm\\wezterm-gui.exe", environment(L"ProgramFiles") + L"\\WezTerm\\wezterm-gui.exe",
+                                  environment(L"LOCALAPPDATA") + L"\\Programs\\WezTerm\\wezterm-gui.exe", environment(L"USERPROFILE") + L"\\scoop\\apps\\wezterm\\current\\wezterm-gui.exe"})
+    {
+      if (file_there(candidate))
+        return candidate;
+    }
+    return std::wstring();
+  }();
+  return found;
+}
+
+// ShellExecute's answer: 0 when it started, else the error, read before anything can change it.
+DWORD execute(const wchar_t *verb, const std::wstring &file, const std::wstring &args, const std::wstring &directory)
+{
+  SHELLEXECUTEINFOW info{};
+  info.cbSize = sizeof info;
+  info.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+  info.lpVerb = verb;
+  info.lpFile = file.c_str();
+  info.lpParameters = args.empty() ? nullptr : args.c_str();
+  info.lpDirectory = directory.empty() ? nullptr : directory.c_str();
+  info.nShow = SW_SHOWNORMAL;
+  return ShellExecuteExW(&info) ? 0 : GetLastError();
+}
+
+std::expected<void, std::string> started(DWORD error)
+{
+  if (error == 0)
+    return {};
+  if (error == ERROR_CANCELLED)
+    return std::unexpected(std::string("not started: the administrator prompt was declined"));
+  return std::unexpected(error_text(error));
+}
+} // namespace
+
+std::string terminal_name()
+{
+  return wezterm().empty() ? "Windows Terminal" : "WezTerm";
+}
+
+std::expected<void, std::string> open_terminal(const std::string &folder, bool elevated)
+{
+  // WezTerm when it is installed: `start --cwd` opens the shell its configuration names. Else
+  // Windows Terminal, else the console host. An elevated process starts in System32 whatever it is
+  // told, so the folder always goes in the arguments.
   const auto dir = wide(folder);
-  const std::wstring args = L"-d \"" + dir + L"\"";
-  if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", L"wt.exe", args.c_str(), nullptr, SW_SHOWNORMAL)) > 32)
+  const wchar_t *verb = elevated ? L"runas" : L"open";
+  if (!wezterm().empty())
+    return started(execute(verb, wezterm(), L"start --cwd " + quoted(dir), dir));
+  if (const DWORD e = execute(verb, L"wt.exe", L"-d " + quoted(dir), dir); e == 0 || e == ERROR_CANCELLED)
+    return started(e);
+  return started(execute(verb, L"cmd.exe", L"/k cd /d " + quoted(dir), dir));
+}
+
+bool can_elevate()
+{
+  return true;
+}
+
+bool is_program(const std::string &name)
+{
+  const auto dot = name.rfind('.');
+  if (dot == std::string::npos)
+    return false;
+  std::string ext = name.substr(dot + 1);
+  for (auto &c : ext)
+    c = char(std::tolower(static_cast<unsigned char>(c)));
+  return ext == "exe" || ext == "com" || ext == "bat" || ext == "cmd" || ext == "msi";
+}
+
+std::expected<void, std::string> run_elevated(const std::string &path)
+{
+  return started(execute(L"runas", wide(path), L"", wide(parent(path))));
+}
+
+// ---- the default file manager (G67)
+
+namespace detail
+{
+// Where the per-user classes are; --probe points it at a key of its own.
+std::wstring classes = L"Software\\Classes";
+} // namespace detail
+
+namespace
+{
+constexpr wchar_t verb_name[] = L"vui-explorer";
+// The value the default verb had before, kept beside it so restoring puts it back.
+constexpr wchar_t previous_value[] = L"VuiExplorerPrevious";
+// What Win+E opens.
+constexpr wchar_t win_e[] = L"CLSID\\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}";
+
+std::wstring own_exe()
+{
+  std::wstring path(MAX_PATH, L'\0');
+  for (;;)
+  {
+    const DWORD n = GetModuleFileNameW(nullptr, path.data(), DWORD(path.size()));
+    if (n < path.size())
+    {
+      path.resize(n);
+      return path;
+    }
+    path.resize(path.size() * 2);
+  }
+}
+
+std::wstring key_of(const std::wstring &relative)
+{
+  return detail::classes + L"\\" + relative;
+}
+
+std::optional<std::wstring> read_value(const std::wstring &key, const wchar_t *value)
+{
+  DWORD size = 0;
+  if (RegGetValueW(HKEY_CURRENT_USER, key.c_str(), value, RRF_RT_REG_SZ, nullptr, nullptr, &size) != ERROR_SUCCESS)
+    return std::nullopt;
+  std::wstring out(size / sizeof(wchar_t), L'\0');
+  if (RegGetValueW(HKEY_CURRENT_USER, key.c_str(), value, RRF_RT_REG_SZ, nullptr, out.data(), &size) != ERROR_SUCCESS)
+    return std::nullopt;
+  out.resize(wcsnlen(out.c_str(), out.size()));
+  return out;
+}
+
+LSTATUS write_value(const std::wstring &key, const wchar_t *value, const std::wstring &data)
+{
+  return RegSetKeyValueW(HKEY_CURRENT_USER, key.c_str(), value, REG_SZ, data.c_str(), DWORD((data.size() + 1) * sizeof(wchar_t)));
+}
+
+std::expected<void, std::string> written(LSTATUS status, const std::wstring &key)
+{
+  if (status == ERROR_SUCCESS)
     return {};
-  if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", L"cmd.exe", nullptr, dir.c_str(), SW_SHOWNORMAL)) > 32)
-    return {};
-  return std::unexpected(error_text(GetLastError()));
+  return std::unexpected("cannot write HKEY_CURRENT_USER\\" + narrow(key.c_str()) + ": " + error_text(DWORD(status)));
+}
+
+// Removes the key and those above it, up to `stop`, that hold nothing at all -- no values, no keys
+// -- or do not exist; the first that holds anything stays, and so does everything above it.
+void remove_empty_up_to(std::wstring key, const std::wstring &stop)
+{
+  while (key.size() > stop.size())
+  {
+    HKEY handle = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, KEY_READ, &handle) == ERROR_SUCCESS)
+    {
+      DWORD subkeys = 0, values = 0;
+      const bool read = RegQueryInfoKeyW(handle, nullptr, nullptr, nullptr, &subkeys, nullptr, nullptr, &values, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS;
+      RegCloseKey(handle);
+      if (!read || subkeys > 0 || values > 0 || RegDeleteKeyW(HKEY_CURRENT_USER, key.c_str()) != ERROR_SUCCESS)
+        return;
+    }
+    key.resize(key.rfind(L'\\'));
+  }
+}
+} // namespace
+
+bool can_be_default()
+{
+  return true;
+}
+
+bool is_default()
+{
+  const auto command = read_value(key_of(L"Directory\\shell\\") + verb_name + L"\\command", nullptr);
+  const auto chosen = read_value(key_of(L"Directory\\shell"), nullptr);
+  return command && chosen && *chosen == verb_name && command->find(own_exe()) != std::wstring::npos;
+}
+
+std::expected<void, std::string> make_default()
+{
+  const auto exe = own_exe();
+  // Folders and drives: a verb of its own, made the default one. Not the Folder class, which also
+  // holds This PC, the Recycle Bin and Control Panel, none of which this explorer can show.
+  for (const wchar_t *type : {L"Directory", L"Drive"})
+  {
+    const auto shell = key_of(type) + L"\\shell";
+    const auto verb = shell + L"\\" + verb_name;
+    if (auto r = written(write_value(verb, nullptr, L"Open in vui explorer"), verb); !r)
+      return r;
+    if (auto r = written(write_value(verb + L"\\command", nullptr, quoted(exe) + L" --at \"%1\""), verb); !r)
+      return r;
+    const auto before = read_value(shell, nullptr);
+    if (before && *before != verb_name && !read_value(shell, previous_value))
+      (void)write_value(shell, previous_value, *before);
+    if (auto r = written(write_value(shell, nullptr, verb_name), shell); !r)
+      return r;
+  }
+  // Win+E: the command of the item it opens, with DelegateExecute empty so the command is what runs.
+  const auto open_new = key_of(win_e) + L"\\shell\\opennewwindow\\command";
+  if (auto r = written(write_value(open_new, nullptr, quoted(exe)), open_new); !r)
+    return r;
+  if (auto r = written(write_value(open_new, L"DelegateExecute", L""), open_new); !r)
+    return r;
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  return {};
+}
+
+std::vector<std::pair<bool, std::string>> detail::probe_default()
+{
+  std::vector<std::pair<bool, std::string>> out;
+  const auto real = detail::classes;
+  const std::wstring root = L"Software\\vui-explorer-probe";
+  detail::classes = root + L"\\Classes";
+  const auto classes = detail::classes;
+  // Something of the user's own beside it, which restoring must leave alone.
+  (void)write_value(classes + L"\\Directory\\shell\\theirs", nullptr, L"x");
+  const auto made = make_default();
+  out.emplace_back(made && is_default(), "registered as the default file manager, under a scratch key" + (made ? std::string() : ": " + made.error()));
+  const auto drive = read_value(classes + L"\\Drive\\shell\\vui-explorer\\command", nullptr).value_or(L"");
+  const auto win_e_command = read_value(classes + L"\\" + win_e + L"\\shell\\opennewwindow\\command", nullptr).value_or(L"");
+  const auto delegate = read_value(classes + L"\\" + win_e + L"\\shell\\opennewwindow\\command", L"DelegateExecute");
+  out.emplace_back(drive.find(own_exe()) != std::wstring::npos && drive.find(L"--at \"%1\"") != std::wstring::npos && read_value(classes + L"\\Drive\\shell", nullptr).value_or(L"") == verb_name &&
+                     win_e_command.find(own_exe()) != std::wstring::npos && delegate && delegate->empty(),
+                   "drives and Win+E point at this executable");
+  const auto restored = restore_default();
+  HKEY handle = nullptr;
+  const bool verb_gone = RegOpenKeyExW(HKEY_CURRENT_USER, (classes + L"\\Directory\\shell\\vui-explorer").c_str(), 0, KEY_READ, &handle) != ERROR_SUCCESS;
+  if (!verb_gone)
+    RegCloseKey(handle);
+  // Win+E's key goes; CLSID itself stays, as the real one, full of others' classes, always would.
+  const bool clsid_gone = RegOpenKeyExW(HKEY_CURRENT_USER, (classes + L"\\" + win_e).c_str(), 0, KEY_READ, &handle) != ERROR_SUCCESS;
+  if (!clsid_gone)
+    RegCloseKey(handle);
+  out.emplace_back(restored && !is_default() && verb_gone && clsid_gone && !read_value(classes + L"\\Directory\\shell", nullptr), "and unregistered without a trace");
+  out.emplace_back(read_value(classes + L"\\Directory\\shell\\theirs", nullptr).value_or(L"") == L"x", "leaving what was there before alone");
+  RegDeleteTreeW(HKEY_CURRENT_USER, root.c_str());
+  RegDeleteKeyW(HKEY_CURRENT_USER, root.c_str());
+  detail::classes = real;
+  return out;
+}
+
+std::expected<void, std::string> restore_default()
+{
+  for (const wchar_t *type : {L"Directory", L"Drive"})
+  {
+    const auto shell = key_of(type) + L"\\shell";
+    RegDeleteTreeW(HKEY_CURRENT_USER, (shell + L"\\" + verb_name).c_str());
+    if (const auto chosen = read_value(shell, nullptr); chosen && *chosen == verb_name)
+    {
+      if (const auto before = read_value(shell, previous_value))
+        (void)write_value(shell, nullptr, *before);
+      else
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, shell.c_str(), nullptr);
+    }
+    RegDeleteKeyValueW(HKEY_CURRENT_USER, shell.c_str(), previous_value);
+    remove_empty_up_to(shell, detail::classes);
+  }
+  const auto open_new = key_of(win_e) + L"\\shell\\opennewwindow";
+  RegDeleteTreeW(HKEY_CURRENT_USER, open_new.c_str());
+  remove_empty_up_to(open_new, key_of(L"CLSID"));
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  return {};
 }
 
 std::expected<void, std::string> reveal(const std::string &path)

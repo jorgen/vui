@@ -1012,3 +1012,30 @@ child's natural width, and a spacer has none, so the charts in a short last row 
 the ones above. A grid sizes cells from the grid, not from what else shares the row.
 
 The grid does not hand out height: a grid given more height than its rows need leaves it below them.
+
+## G67. The default file manager, WezTerm, and running as administrator
+
+**Default file manager.** Windows has no setting for one, so this does what Directory Opus and
+XYplorer do, for the current user only: a verb of its own under `HKCU\Software\Classes\Directory`
+and `\Drive`, made the default verb, and Win+E's item
+(`CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow\command`, `DelegateExecute`
+empty). Not the `Folder` class: that also holds This PC, the Recycle Bin and Control Panel, which
+this explorer cannot show. A default verb that was there before is kept beside it and put back;
+restoring removes only keys left empty, so anything else under them stays. The command holds the
+executable's own path, so it should be registered from a copy that stays where it is. The menu on
+empty space toggles it, as do `--register` and `--unregister`; `--probe` runs the round trip under
+a scratch key with a value of the user's own beside it. "Show in folder" from other programs calls a
+shell function that always opens Explorer, and stays as it is.
+
+A drive arrives as `"C:\"`, which the C runtime parses as `C:` and a quote; `--at` reads the quote
+as the backslash it swallowed.
+
+**WezTerm.** Windows' own default-terminal setting takes only terminals that implement its handoff
+interface, which WezTerm does not, so "Open terminal here" chooses for itself: WezTerm wherever it
+is installed (PATH, Program Files, a per-user install, Scoop; the app bundle on macOS; the PATH on
+Linux), with `start --cwd`, which opens the shell its configuration names; else what it used before.
+
+**Administrator.** "Open WezTerm here as administrator" and "Run as administrator" for .exe, .com,
+.bat, .cmd and .msi use the runas verb, which asks through UAC; a declined prompt is reported as
+such. An elevated process starts in System32 whatever directory it is given, so the folder always
+travels in the arguments. Windows only.

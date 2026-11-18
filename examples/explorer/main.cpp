@@ -1459,6 +1459,10 @@ enum class action_t
   reset_places,
   reveal,
   terminal,
+  terminal_admin,
+  run_admin,
+  make_default,
+  restore_default,
   properties,
   trash,
   remove,
@@ -2300,6 +2304,14 @@ struct explorer_t
       items.push_back({.label = std::move(label), .kind = ui::menu_item_t::kind_t::header});
       menu_actions.emplace_back(action_t::refresh, 0);
     };
+    // The terminal (G67): WezTerm when it is installed, and as administrator where that exists.
+    const auto terminal_items = [&]
+    {
+      const auto name = shell::terminal_name();
+      add({.label = "Open " + name + " here"}, action_t::terminal);
+      if (shell::can_elevate())
+        add({.label = "Open " + name + " here as administrator"}, action_t::terminal_admin);
+    };
     if (menu_place)
     {
       const auto i = *menu_place;
@@ -2361,6 +2373,8 @@ struct explorer_t
       if (!folder && found != handlers.end() && !found->second.empty() && found->second.front().is_default)
         by = found->second.front().name;
       add({.label = "Open", .detail = folder ? "Enter" : by}, action_t::open);
+      if (!folder && shell::can_elevate() && shell::is_program(menu_entry->name))
+        add({.label = "Run as administrator"}, action_t::run_admin);
       if (folder)
         add({.label = "Add to Places", .enabled = !is_in_places(shell::join(path, menu_entry->name))}, action_t::add_place);
       if (!folder && !ext.empty())
@@ -2429,7 +2443,7 @@ struct explorer_t
       add({.label = "Copy path with backslashes"}, action_t::copy_path_native);
 #endif
       add({.label = std::string("Show in ") + shell::file_manager_name()}, action_t::reveal);
-      add({.label = "Open terminal here"}, action_t::terminal);
+      terminal_items();
       rule();
       add({.label = "Delete", .detail = "Del"}, action_t::trash);
       add({.label = "Delete permanently", .detail = "Shift+Del"}, action_t::remove);
@@ -2445,7 +2459,7 @@ struct explorer_t
       add({.label = "Edit path", .detail = "double-click"}, action_t::edit_path);
       add({.label = "Add to Places", .enabled = !is_in_places(path)}, action_t::add_place);
       rule();
-      add({.label = "Open terminal here"}, action_t::terminal);
+      terminal_items();
       add({.label = std::string("Show in ") + shell::file_manager_name()}, action_t::reveal);
       if (shell::has_properties())
         add({.label = "Properties"}, action_t::properties);
@@ -2459,9 +2473,17 @@ struct explorer_t
       add({.label = "Copy path with backslashes"}, action_t::copy_path_native);
 #endif
       add({.label = std::string("Show in ") + shell::file_manager_name()}, action_t::reveal);
-      add({.label = "Open terminal here"}, action_t::terminal);
+      terminal_items();
       if (shell::has_properties())
         add({.label = "Properties"}, action_t::properties);
+      if (shell::can_be_default())
+      {
+        rule();
+        if (shell::is_default())
+          add({.label = std::string("Restore ") + shell::file_manager_name() + " as the default"}, action_t::restore_default);
+        else
+          add({.label = "Make vui explorer the default file manager", .detail = "folders, drives, Win+E"}, action_t::make_default);
+      }
     }
     menu_items = std::move(items);
   }
@@ -2531,8 +2553,27 @@ struct explorer_t
       launch([target] { return shell::reveal(target); }, std::string("Shown in ") + shell::file_manager_name());
       break;
     case action_t::terminal:
-      launch([folder_of] { return shell::open_terminal(folder_of); }, "Terminal opened in " + folder_of);
+    case action_t::terminal_admin:
+    {
+      const bool elevated = action == action_t::terminal_admin;
+      launch([folder_of, elevated] { return shell::open_terminal(folder_of, elevated); }, shell::terminal_name() + (elevated ? " opened as administrator in " : " opened in ") + folder_of);
       break;
+    }
+    case action_t::run_admin:
+      if (entry)
+        launch([target] { return shell::run_elevated(target); }, "Started " + entry->name + " as administrator");
+      break;
+    case action_t::make_default:
+    case action_t::restore_default:
+    {
+      const bool make = action == action_t::make_default;
+      const auto r = make ? shell::make_default() : shell::restore_default();
+      if (!r)
+        say(r.error(), true);
+      else
+        say(make ? "Folders, drives and Win+E now open vui explorer" : std::string("Folders open in ") + shell::file_manager_name() + " again");
+      break;
+    }
     case action_t::properties:
       launch([target] { return shell::properties(target); }, "");
       break;
@@ -3561,6 +3602,11 @@ int probe_and_check()
     folder_size_t stopped;
     check(!measure_folder(top, [] { return false; }, [](const folder_size_t &) {}, stopped) && !stopped.done, "and stops when asked");
   }
+  std::printf("terminal: %s\n", shell::terminal_name().c_str());
+#if defined(_WIN32)
+  for (const auto &[ok, what] : shell::detail::probe_default())
+    check(ok, what);
+#endif
   // Archives: every format some installed tool writes, packed and unpacked again, the contents
   // compared; and extracting again keeps a file that is there.
   {
@@ -3635,6 +3681,25 @@ int main(int argc, char **argv)
     return probe_and_check();
   if (argc > 1 && std::strcmp(argv[1], "--ui-test") == 0)
     return ui_test_main();
+  // `--register` makes this executable, where it is, the file manager folders open in; `--unregister`
+  // undoes it (G67).
+  if (argc > 1 && (std::strcmp(argv[1], "--register") == 0 || std::strcmp(argv[1], "--unregister") == 0))
+  {
+    const bool make = std::strcmp(argv[1], "--register") == 0;
+    if (!shell::can_be_default())
+    {
+      std::fprintf(stderr, "%s is only on Windows\n", argv[1]);
+      return 2;
+    }
+    const auto r = make ? shell::make_default() : shell::restore_default();
+    if (!r)
+    {
+      std::fprintf(stderr, "%s\n", r.error().c_str());
+      return 1;
+    }
+    std::printf("%s\n", make ? "folders, drives and Win+E now open vui explorer" : "folders open in Explorer again");
+    return 0;
+  }
   shell::initialize();
   // `vui_explorer [milliseconds] [--at folder]`: a time limit for CI, a folder to start in.
   long milliseconds = 0;
@@ -3642,7 +3707,13 @@ int main(int argc, char **argv)
   for (int i = 1; i < argc; ++i)
   {
     if (std::strcmp(argv[i], "--at") == 0 && i + 1 < argc)
+    {
       start = argv[++i];
+      // A drive opened from the shell arrives as "C:\" in quotes, which the C runtime reads as C:
+      // and a quote; the quote stands for the backslash it swallowed.
+      if (!start.empty() && start.back() == '"')
+        start.back() = '\\';
+    }
     else
       milliseconds = std::atol(argv[i]);
   }

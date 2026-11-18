@@ -13,6 +13,7 @@
 #include <expected>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace shell
@@ -89,7 +90,31 @@ struct handler_t
 // These start something and return; their error is that it could not be started.
 std::expected<void, std::string> open(const std::string &path);
 std::expected<void, std::string> open_with(const std::string &path, const handler_t &handler);
-std::expected<void, std::string> open_terminal(const std::string &folder);
+// The terminal opened in a folder (G67): WezTerm wherever it is installed, running the shell its
+// configuration names, else the platform's own. Elevated asks through the system first.
+[[nodiscard]] std::string terminal_name();
+std::expected<void, std::string> open_terminal(const std::string &folder, bool elevated = false);
+// Starting a program as administrator (G67): Windows' runas verb, which asks through UAC. Programs
+// are what Windows runs by name: .exe, .com, .bat, .cmd, .msi.
+[[nodiscard]] bool can_elevate();
+[[nodiscard]] bool is_program(const std::string &name);
+std::expected<void, std::string> run_elevated(const std::string &path);
+// This explorer as the file manager folders open in (G67): double-clicking a folder or a drive,
+// and Win+E, for the current user only and undone without a trace. Windows only.
+[[nodiscard]] bool can_be_default();
+[[nodiscard]] bool is_default();
+std::expected<void, std::string> make_default();
+std::expected<void, std::string> restore_default();
+#if defined(_WIN32)
+namespace detail
+{
+// The per-user classes key, under HKEY_CURRENT_USER; --probe points it at a scratch key.
+extern std::wstring classes;
+// --probe's check of make_default and restore_default, run against a scratch key and removed after:
+// what was checked, and whether it held.
+std::vector<std::pair<bool, std::string>> probe_default();
+} // namespace detail
+#endif
 // Shows it in the system's own file manager, selected.
 std::expected<void, std::string> reveal(const std::string &path);
 // The system's properties window, where there is one.
