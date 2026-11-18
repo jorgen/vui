@@ -1163,3 +1163,12 @@ probe confirmed), and when no target draws the image it shows the same picture a
 in a click-through layered window at the pointer, with the arrow as the cursor. Where the target
 does draw it, our window hides, and the source writes the action as the drop description unless
 the target has written its own words ("Move to Documents").
+
+## G73. The explorer's side panels are sized by dragging their inner edges
+
+Places (200 wide) and the details panel (270) were fixed, which cut off long names and kept an
+image preview small. The 12-pixel gaps beside the list are now handles: dragged, the panel follows,
+from 140 to 480 for Places and 220 to 900 for details, never leaving the list under 360; a double
+click puts it back, as on the column edges. The preview is fitted to the panel's width, so it grows
+with it. The widths are kept in `panels` beside `places` in the settings folder, written as the
+edge is let go.

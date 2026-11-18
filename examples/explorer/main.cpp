@@ -314,6 +314,58 @@ std::expected<void, std::string> save_places(const std::vector<shell::place_t> &
   return {};
 }
 
+// The side panels' widths as the user left them (G73), one "name width" a line beside the places.
+struct panel_widths_t
+{
+  int sidebar = 200;
+  int details = 270;
+  friend bool operator==(const panel_widths_t &, const panel_widths_t &) = default;
+};
+constexpr panel_widths_t default_panels{};
+constexpr int min_sidebar = 140, max_sidebar = 480, min_details = 220, max_details = 900;
+// What the file list keeps however wide the panels are pulled.
+constexpr int min_list_width = 360;
+
+std::string panels_file()
+{
+  const auto dir = config_dir();
+  return dir.empty() ? std::string() : shell::join(dir, "panels");
+}
+
+panel_widths_t load_panels()
+{
+  panel_widths_t out;
+  const auto file = panels_file();
+  std::ifstream in(file.empty() ? std::filesystem::path() : as_path(file));
+  std::string name;
+  int width = 0;
+  while (in >> name >> width)
+  {
+    if (name == "sidebar")
+      out.sidebar = std::clamp(width, min_sidebar, max_sidebar);
+    else if (name == "details")
+      out.details = std::clamp(width, min_details, max_details);
+  }
+  return out;
+}
+
+void save_panels(const panel_widths_t &widths)
+{
+  const auto file = panels_file();
+  if (file.empty())
+    return;
+  std::error_code error;
+  std::filesystem::create_directories(as_path(config_dir()), error);
+  const auto temporary = file + ".new";
+  {
+    std::ofstream out(as_path(temporary), std::ios::binary | std::ios::trunc);
+    out << "sidebar " << widths.sidebar << "\ndetails " << widths.details << "\n";
+    if (!out)
+      return;
+  }
+  std::filesystem::rename(as_path(temporary), as_path(file), error);
+}
+
 bool same_path(const std::string &a, const std::string &b)
 {
 #if defined(_WIN32)
@@ -1575,12 +1627,20 @@ struct explorer_t
 {
   explicit explorer_t(std::string start)
     : start_at(std::move(start))
+    , panels(load_panels())
     , places(load_places())
     , drives(shell::drives())
   {
   }
 
   std::string start_at;
+
+  // The side panels' widths, and their inner edges, dragged to size them (G73).
+  panel_widths_t panels;
+  ui::pressable_t sidebar_grip, details_grip;
+  const ui::pressable_t *panel_grabbed = nullptr;
+  float panel_grab_x = 0;
+  int panel_grab_width = 0, panel_grab_room = 0;
 
   // Where we are.
   std::string path;
@@ -3277,9 +3337,9 @@ struct explorer_t
     if (limit > 0 && room > 0)
     {
       const float length = std::max(24.0f, room * room / (room + limit));
-      thumb.push_back(ui::at_t{.x = 192, .y = 4 + scrolled / limit * (room - 8 - length), .children = {ui::box_t{.size = {4, int(length)}, .color = t.scrollbar, .radius = 2}}});
+      thumb.push_back(ui::at_t{.x = float(panels.sidebar - 8), .y = 4 + scrolled / limit * (room - 8 - length), .children = {ui::box_t{.size = {4, int(length)}, .color = t.scrollbar, .radius = 2}}});
     }
-    ui::box_t sidebar_box{.size = {200, 80},
+    ui::box_t sidebar_box{.size = {panels.sidebar, 80},
                      .color = panel,
                      .radius = 10,
                      .events = sidebar_area,
@@ -3288,7 +3348,7 @@ struct explorer_t
                      .clip = true,
                      .children = {ui::at_t{.x = 0,
                                            .y = -scrolled,
-                                           .children = {ui::box_t{.size = {200, 0}, .color = clear, .events = sidebar_content, .padding = 10, .align_x = ui::align_t::stretch, .children = {std::move(list)}}}}}};
+                                           .children = {ui::box_t{.size = {panels.sidebar, 0}, .color = clear, .events = sidebar_content, .padding = 10, .align_x = ui::align_t::stretch, .children = {std::move(list)}}}}}};
     for (auto &node : thumb)
       sidebar_box.children.push_back(std::move(node));
     return sidebar_box;
@@ -3298,6 +3358,54 @@ struct explorer_t
   [[nodiscard]] float sidebar_limit() const
   {
     return std::max(0.0f, float(sidebar_content.laid_out().height - sidebar_area.bounds().height));
+  }
+
+  // A side panel's inner edge: the gap beside it, which shows a line while it is pointed at or held.
+  ui::node_t panel_grip(const ui::pressable_t &grip) const
+  {
+    const auto &t = ui::theme();
+    return ui::box_t{.size = {12, 0},
+                     .color = clear,
+                     .events = grip,
+                     .cursor = vui::cursor_t::resize_horizontal,
+                     .children = {ui::box_t{.size = {2, 40}, .color = grip.held() || grip.hovered() ? t.border_hovered : clear, .radius = 1}}};
+  }
+
+  // A side panel's edge dragged to size it, kept as it is let go; a double click puts it back.
+  ui::behaviour_t resize_panels(ui::scope_t &)
+  {
+    auto drags = ui::subscribe<ui::drag_event_t>(sidebar_grip, details_grip);
+    while (auto drag = co_await drags)
+    {
+      const bool left = drag->source == &sidebar_grip;
+      int &width = left ? panels.sidebar : panels.details;
+      if (drag->phase == ui::drag_phase_t::begin && drag->clicks == 2)
+      {
+        width = left ? default_panels.sidebar : default_panels.details;
+        panel_grabbed = nullptr;
+        save_panels(panels);
+      }
+      else if (drag->phase == ui::drag_phase_t::begin)
+      {
+        panel_grabbed = drag->source;
+        panel_grab_x = float(drag->position.x);
+        panel_grab_width = width;
+        panel_grab_room = table.body_bounds().width;
+      }
+      else if (panel_grabbed == drag->source)
+      {
+        // The left panel grows to the right, the right one to the left; the list keeps its room.
+        const float moved = float(drag->position.x) - panel_grab_x;
+        const int lo = left ? min_sidebar : min_details;
+        const int hi = std::max(lo, std::min(left ? max_sidebar : max_details, panel_grab_width + panel_grab_room - min_list_width));
+        width = std::clamp(panel_grab_width + int(std::lround(left ? moved : -moved)), lo, hi);
+        if (drag->phase == ui::drag_phase_t::end)
+        {
+          panel_grabbed = nullptr;
+          save_panels(panels);
+        }
+      }
+    }
   }
 
   ui::node_t details() const
@@ -3327,18 +3435,18 @@ struct explorer_t
       col.children.push_back(muted(kinds));
       if (files > 0)
         col.children.push_back(muted(bytes(size) + " in the files" + (size >= 1024 ? "  (" + grouped(size) + " bytes)" : "")));
-      return ui::box_t{.size = {270, 0}, .color = panel, .radius = 10, .padding = 14, .align_x = ui::align_t::stretch, .align_y = ui::align_t::start, .children = {std::move(col)}};
+      return ui::box_t{.size = {panels.details, 0}, .color = panel, .radius = 10, .padding = 14, .align_x = ui::align_t::stretch, .align_y = ui::align_t::start, .children = {std::move(col)}};
     }
     if (!e)
     {
       col.children.push_back(text("Nothing selected", 15, t.text));
       col.children.push_back(muted(grouped(table.shown()) + " items in this folder"));
-      return ui::box_t{.size = {270, 0}, .color = panel, .radius = 10, .padding = 14, .align_x = ui::align_t::stretch, .align_y = ui::align_t::start, .children = {std::move(col)}};
+      return ui::box_t{.size = {panels.details, 0}, .color = panel, .radius = 10, .padding = 14, .align_x = ui::align_t::stretch, .align_y = ui::align_t::start, .children = {std::move(col)}};
     }
     col.children.push_back(ui::row_t{.gap = 10,
                                      .align = ui::align_t::center,
                                      .children = {ui::icon_t{.path = e->directory ? icons().folder : icons().file, .size = 28, .color = e->directory ? folder_color : file_color},
-                                                  ui::box_t{.size = {200, 0}, .color = clear, .align_x = ui::align_t::start, .clip = true, .children = {text(e->name, 15, t.text)}}}});
+                                                  ui::box_t{.size = {panels.details - 70, 0}, .color = clear, .align_x = ui::align_t::start, .clip = true, .children = {text(e->name, 15, t.text)}}}});
     const auto line = [&](const char *name, std::string value) { col.children.push_back(ui::row_t{.gap = 8, .children = {ui::box_t{.size = {70, 0}, .color = clear, .align_x = ui::align_t::start, .children = {muted(name)}}, text(std::move(value), 12, t.text)}}); };
     line("Type", e->directory ? "File folder" : (types.contains(extension_of(e->name)) ? types.at(extension_of(e->name)) : extension_of(e->name)));
     if (!e->directory)
@@ -3365,7 +3473,7 @@ struct explorer_t
       if (preview_image && preview_image->width > 0 && preview_image->height > 0)
       {
         // Fitted to the pane, its shape kept, never enlarged past twice its pixels.
-        constexpr float room_w = 246, room_h = 360;
+        const float room_w = float(panels.details - 24), room_h = std::max(360.0f, room_w * 1.4f);
         const float w = float(preview_image->width), h = float(preview_image->height);
         const float fit = std::min({room_w / w, room_h / h, 2.0f});
         p.children.push_back(ui::box_t{.color = clear,
@@ -3385,7 +3493,7 @@ struct explorer_t
       whole.children.push_back(ui::box_t{.color = panel, .radius = 10, .grow = 1, .padding = 12, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {std::move(p)}});
     }
     // Clipped with a small height of its own, as the sidebar is: the preview gives up room first.
-    return ui::box_t{.size = {270, 80}, .color = clear, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .clip = true, .children = {std::move(whole)}};
+    return ui::box_t{.size = {panels.details, 80}, .color = clear, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .clip = true, .children = {std::move(whole)}};
   }
 
   ui::node_t status_bar() const
@@ -3411,11 +3519,10 @@ struct explorer_t
                       .align = ui::align_t::stretch,
                       .padding = 14,
                       .children = {toolbar(),
-                                   ui::row_t{.gap = 12,
-                                             .align = ui::align_t::stretch,
+                                   ui::row_t{.align = ui::align_t::stretch,
                                              .grow = 1,
-                                             .children = {sidebar(), ui::box_t{.color = clear, .grow = 1, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {ui::mount(table, {.filter = filter, .show_hidden = show_hidden, .types_version = types_version, .passive = menu_at.has_value() || asking()})}},
-                                                          details()}},
+                                             .children = {sidebar(), panel_grip(sidebar_grip), ui::box_t{.color = clear, .grow = 1, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {ui::mount(table, {.filter = filter, .show_hidden = show_hidden, .types_version = types_version, .passive = menu_at.has_value() || asking()})}},
+                                                          panel_grip(details_grip), details()}},
                                    status_bar()}};
     // The menu, over everything, where it was opened.
     ui::box_t whole{.color = clear, .events = window_area, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {std::move(page)}};
@@ -3506,6 +3613,7 @@ struct explorer_t
     auto presses = ui::subscribe<ui::press_event_t>(back_button, forward_button, up_button, home_button, refresh_button, pdf_previous, pdf_next);
     auto crumbs = ui::subscribe<ui::press_event_t>(crumb_buttons);
     scope.spawn(drag_and_drop(scope));
+    scope.spawn(resize_panels(scope));
     auto places_pressed = ui::subscribe<ui::press_event_t>(place_buttons);
     auto filters = ui::subscribe<ui::line_edit_event_t>(filter_edit.changed);
     auto toggles = ui::subscribe<ui::toggle_event_t>(hidden_box.changed);
@@ -3851,6 +3959,46 @@ vio::task_t<void> ui_test_drags(vio::event_loop_t &loop, vui::window_t &window, 
   check(!ex.confirming_reset && ex.places.size() == standard.size() && !ex.places.empty() && ex.places.front().path == standard.front().path, "Enter resets them");
 }
 
+// The side panels' edges (G73): each dragged, kept in the settings, and put back by a double click.
+vio::task_t<void> ui_test_panels(vio::event_loop_t &loop, vui::window_t &window, ui::scope_t &scope, explorer_t &ex, int &failures)
+{
+  const auto check = [&failures](bool ok, const std::string &what)
+  {
+    std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.c_str());
+    failures += ok ? 0 : 1;
+  };
+  struct side_t
+  {
+    const ui::pressable_t *grip;
+    int *width;
+    int by;
+    int expected_change;
+    const char *name;
+  };
+  for (const auto &side : {side_t{&ex.sidebar_grip, &ex.panels.sidebar, 60, 60, "Places"}, side_t{&ex.details_grip, &ex.panels.details, -100, 100, "details"}})
+  {
+    co_await ui_test_pause(loop, 550);
+    const int before = *side.width;
+    const auto b = side.grip->bounds();
+    const double gx = b.x + b.width / 2.0, gy = b.y + b.height / 2.0;
+    window.impl()->on_input(vui::pointer_move_event_t{ui_test_at(scope, gx, gy)});
+    window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, ui_test_at(scope, gx, gy)});
+    for (int step = 1; step <= 10; ++step)
+      window.impl()->on_input(vui::pointer_move_event_t{ui_test_at(scope, gx + step * side.by / 10.0, gy)});
+    window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, ui_test_at(scope, gx + side.by, gy)});
+    co_await ui_test_pause(loop, 120);
+    check(*side.width == before + side.expected_change, std::string("dragging the edge of the ") + side.name + " panel sizes it (" + std::to_string(before) + " to " + std::to_string(*side.width) + ")");
+    const auto saved = load_panels();
+    check(saved == ex.panels, std::string("and the ") + side.name + " panel's width is kept in the settings");
+    co_await ui_test_pause(loop, 550);
+    const auto moved = side.grip->bounds();
+    ui_test_click(window, ui_test_at(scope, moved.x + moved.width / 2.0, moved.y + moved.height / 2.0));
+    ui_test_click(window, ui_test_at(scope, moved.x + moved.width / 2.0, moved.y + moved.height / 2.0));
+    co_await ui_test_pause(loop, 120);
+    check(*side.width == before && load_panels() == ex.panels, std::string("a double click puts the ") + side.name + " panel back (" + std::to_string(*side.width) + ")");
+  }
+}
+
 // The folder holds "sub" and a.txt to f.txt, shown folders first: sub at row 0, a.txt at row 1.
 vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::string folder, int &failures)
 {
@@ -3951,6 +4099,7 @@ vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::s
     check(!ex.renaming && there("renamed.txt") && !there("other.txt"), "Escape leaves the name as it was");
 
     co_await ui_test_drags(loop, window, scope, ex, folder, failures);
+    co_await ui_test_panels(loop, window, scope, ex, failures);
 
     // The Name column's edge, dragged 100 to the left, and a double click on it to fill again.
     const int before = ex.table.name_column_width();
