@@ -1669,6 +1669,8 @@ struct explorer_t
   std::size_t navigations = 0;
   std::string status;
   bool status_error = false;
+  // The last error said, which the next message may replace on screen; the UI test reports it.
+  std::string last_error;
 
   // The preview of the selection.
   std::uint64_t preview_generation = 0;
@@ -1805,6 +1807,8 @@ struct explorer_t
 
   void say(std::string message, bool error = false)
   {
+    if (error)
+      last_error = message;
     status = std::move(message);
     status_error = error;
   }
@@ -2375,15 +2379,18 @@ struct explorer_t
   }
 
   // On `worker`, then `then` on the UI thread once it has succeeded.
-  void launch_on(worker_t *worker, std::function<std::expected<void, std::string>()> what, std::string done, std::function<void(ui::scope_t &)> then)
+  // `then` once it has worked; `always` whether it did or not, as reading the folder again after a
+  // copy or move must be: one that failed half way still changed what is there.
+  void launch_on(worker_t *worker, std::function<std::expected<void, std::string>()> what, std::string done, std::function<void(ui::scope_t &)> then,
+                 std::function<void(ui::scope_t &)> always = {})
   {
     auto *p = pipe;
     worker->post(
-      [this, p, what = std::move(what), done = std::move(done), then = std::move(then)]
+      [this, p, what = std::move(what), done = std::move(done), then = std::move(then), always = std::move(always)]
       {
         auto r = what();
         p->post_event(
-          [this, r, done, then](ui::scope_t &scope)
+          [this, r, done, then, always](ui::scope_t &scope)
           {
             if (r)
             {
@@ -2394,6 +2401,8 @@ struct explorer_t
             }
             else
               say(r.error(), true);
+            if (always)
+              always(scope);
             scope.invalidate();
           });
       });
@@ -2478,7 +2487,7 @@ struct explorer_t
     bool touches_here = within(into, path) && within(path, into);
     for (const auto &item : items)
       touches_here = touches_here || (move && within(shell::parent(item), path) && within(path, shell::parent(item)));
-    launch_on(jobs, [items, into, move] { return shell::transfer(items, into, move); }, (move ? "Moved " : "Copied ") + counted(items.size(), first) + " to " + (name.empty() ? into : name),
+    launch_on(jobs, [items, into, move] { return shell::transfer(items, into, move); }, (move ? "Moved " : "Copied ") + counted(items.size(), first) + " to " + (name.empty() ? into : name), {},
               [this, touches_here](ui::scope_t &scope)
               {
                 if (touches_here)
@@ -2668,10 +2677,13 @@ struct explorer_t
     const auto first = items.front().substr(std::min(items.front().size(), items.front().find_last_of("\\/") + 1));
     const auto name = into.substr(std::min(into.size(), into.find_last_of("\\/") + 1));
     launch_on(jobs, [items, into, cut] { return shell::transfer(items, into, cut); }, (cut ? "Moved " : "Copied ") + counted(items.size(), first) + " to " + (name.empty() ? into : name),
-              [this, cut, into](ui::scope_t &scope)
+              [this, cut](ui::scope_t &scope)
               {
                 if (cut)
                   shell::clear_clipboard(owner(scope));
+              },
+              [this, into](ui::scope_t &scope)
+              {
                 if (into == path || shell::parent(into) == path)
                   go(scope, path, false);
               });
@@ -3913,8 +3925,8 @@ vio::task_t<void> ui_test_drags(vio::event_loop_t &loop, vui::window_t &window, 
   co_await drag(row(1), row(0));
   for (int i = 0; i < 250 && !(sub_file("e.txt") && !there("e.txt") && ex.table.shown() == 3); ++i)
     co_await ui_test_pause(loop, 20);
-  check(sub_file("e.txt") && !there("e.txt") && there("f.txt"), "a file dragged onto a folder moves into it, and only that file");
-  check(ex.table.shown() == 3, "and leaves the list (" + std::to_string(ex.table.shown()) + ")");
+  check(sub_file("e.txt") && !there("e.txt") && there("f.txt"), "a file dragged onto a folder moves into it, and only that file" + (ex.last_error.empty() ? std::string() : " (last error: " + ex.last_error + ")"));
+  check(ex.table.shown() == 3, "and leaves the list (" + std::to_string(ex.table.shown()) + (ex.last_error.empty() ? std::string() : ", last error: " + ex.last_error) + ")");
 
   // A folder dragged onto Places is added where it is let go; a file is not.
   co_await ui_test_pause(loop, 550);
