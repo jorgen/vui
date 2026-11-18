@@ -4020,6 +4020,8 @@ int ui_test_main()
       auto window = vui::window_t::create(*display, {.title = "vui explorer test", .size = {1680, 1050}});
       if (!window)
         co_return 1;
+      // Its drags stay inside the window: the system's would follow the real pointer (G72).
+      window->allow_system_drag(false);
       auto closing = [](vui::window_t &window) -> vio::task_t<void>
       {
         auto requests = window.subscribe<vui::close_request_t>();

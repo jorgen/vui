@@ -31,6 +31,7 @@ Copyright (c) 2026 Jørgen Lind
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
@@ -676,6 +677,29 @@ DWORD one_effect(DWORD effects) noexcept
   return DROPEFFECT_NONE;
 }
 
+// The picture that follows the pointer: the first item as the shell draws it, its thumbnail or its
+// icon. Without one Windows shows a blank box wherever a target draws the drag image.
+SHDRAGIMAGE drag_image(const std::string &path)
+{
+  SHDRAGIMAGE image{};
+  image.crColorKey = CLR_NONE;
+  IShellItemImageFactory *factory = nullptr;
+  if (FAILED(SHCreateItemFromParsingName(widen(path).c_str(), nullptr, IID_PPV_ARGS(&factory))))
+    return image;
+  HBITMAP bitmap = nullptr;
+  if (SUCCEEDED(factory->GetImage(SIZE{96, 96}, SIIGBF_BIGGERSIZEOK, &bitmap)) && bitmap)
+  {
+    BITMAP info{};
+    GetObjectW(bitmap, sizeof(info), &info);
+    image.hbmpDragImage = bitmap;
+    image.sizeDragImage = {info.bmWidth, std::abs(info.bmHeight)};
+    // Held near its bottom middle, as Explorer holds what it drags.
+    image.ptOffset = {info.bmWidth / 2, std::abs(info.bmHeight) * 3 / 4};
+  }
+  factory->Release();
+  return image;
+}
+
 // A shell data object for the paths: what Explorer itself hands out, with CF_HDROP for programs
 // that read only that, and the shell's own list of items for those that read more.
 IDataObject *make_data_object(const std::vector<std::string> &paths)
@@ -787,6 +811,16 @@ void win32_window_t::run_drag()
   {
     auto &thread = *_display.thread;
     DWORD effect = DROPEFFECT_NONE;
+    // The drag image, and leave to say "Move to ..." in words where the target describes the drop.
+    IDragSourceHelper2 *helper = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&helper))))
+    {
+      helper->SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT);
+      SHDRAGIMAGE image = drag_image(_drag_paths.front());
+      if (image.hbmpDragImage && FAILED(helper->InitializeFromBitmap(&image, data)))
+        DeleteObject(image.hbmpDragImage);
+      helper->Release();
+    }
     thread.enter_modal();
     const HRESULT done = SHDoDragDrop(handle, data, nullptr, DWORD(_drag_allowed), &effect);
     thread.leave_modal();

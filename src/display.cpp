@@ -697,7 +697,13 @@ cursor_t window_t::cursor() const noexcept
 
 bool window_t::start_drag(std::vector<std::string> paths, drop_action_t allowed)
 {
-  return *this && _impl->backend->start_drag(std::move(paths), allowed);
+  return *this && _impl->system_drag && _impl->backend->start_drag(std::move(paths), allowed);
+}
+
+void window_t::allow_system_drag(bool allow) noexcept
+{
+  if (*this)
+    _impl->system_drag = allow;
 }
 
 void window_t::accept_drop(drop_action_t action) noexcept

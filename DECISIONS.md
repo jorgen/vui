@@ -1139,3 +1139,18 @@ shortcut of it. Files dropped on Places are refused.
 The UI test drags inside its window through the window's input queue: a file onto a folder, a
 file and a folder onto Places, and a place to the top. Its Places are kept in its own folder,
 never the user's.
+
+## G72. A drag goes to the window system at once
+
+G70 kept a drag inside the window as the runtime's own until it crossed the edge. That looked like
+two different drags: inside, a bare arrow; outside, Windows' cursor; and back inside, Windows' drag
+image, which was a blank box because none had been given. Every native Windows program hands the
+drag to OLE as soon as it starts, so vui now does too: `start_drag` is offered the drag on its
+first move, and drops on the window's own panes arrive as the window system's drop events, the
+path a drag that left and came back already took. The image is the first item as the shell draws
+it (IShellItemImageFactory), given to IDragSourceHelper2, with drop descriptions allowed.
+
+The runtime still carries the drag where the backend refuses one -- X11, Wayland, macOS, the null
+backend -- and where `window_t::allow_system_drag(false)` says so. The explorer's UI test does that:
+it drives the window through its input queue, while OLE's drag follows the real pointer and the
+real button, and would drop wherever the user's mouse happened to be.

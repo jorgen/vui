@@ -518,10 +518,10 @@ public:
     update_cursor();
   }
 
-  // ---- drag and drop (G70). A drag begun by ui::start_drag stays the runtime's own while the
-  // pointer is inside the window, so nothing of the window system is involved in moving something
-  // from one pane to another; past the window's edge it is handed to the window system, where the
-  // backend can, and comes back -- if it does -- as the window system's drop events.
+  // ---- drag and drop (G70, G72). A drag begun by ui::start_drag goes to the window system at
+  // once where the backend can take one, so it looks and behaves the same over this window as over
+  // any other, and arrives here as the window system's drop events. Where it cannot, the runtime
+  // carries the drag itself, inside the window.
   bool start_drag(std::vector<std::string> paths, drop_action_t allowed)
   {
     if (!_held.source || _drag)
@@ -541,8 +541,7 @@ public:
     if (_drag->handed_off)
       return;
     _drop_modifiers = modifiers;
-    const bool outside = _pointer.x < 0 || _pointer.y < 0 || _pointer.x >= _logical.width || _pointer.y >= _logical.height;
-    if (outside && !_drag->refused_off)
+    if (!_drag->refused_off)
     {
       drop_leave();
       if (_window.start_drag(_drag->data->paths, _drag->allowed))

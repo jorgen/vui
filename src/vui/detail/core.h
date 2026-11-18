@@ -365,6 +365,7 @@ public:
   cursor_t cursor = cursor_t::arrow;
   // The answer to a drag over the window, which the backend tells the dragging program (G70).
   drop_action_t drop_answer = drop_action_t::none;
+  bool system_drag = true;
   bool visible = false;
   bool damaged = true;
   bool frame_tick = false;
