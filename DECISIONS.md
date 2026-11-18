@@ -1053,3 +1053,26 @@ the pointer rested on it in.
 In the explorer, moving, removing and resetting Places sit in a "Manage Places" submenu: removing a
 place, or all of them, should take a deliberate step, and a context menu is where a slip of the
 pointer lands. "Add to Places" is gone from every menu; a folder is added by dragging it there.
+
+## G69. Cut, copy, paste and rename in the explorer
+
+Ctrl+X, Ctrl+C and Ctrl+V cut, copy and paste files; F2 renames in place. The same are in the
+context menus: Cut and Copy on a selection, "Paste into folder" on a folder, Paste on the empty
+list, and Rename on one entry.
+
+On Windows the files go on the system clipboard as Explorer puts them there, CF_HDROP and the
+"Preferred DropEffect" that tells a cut from a copy, so files copied in Explorer paste here and the
+other way round. Pasting is the shell's own copy or move (SHFileOperation, with undo): its progress,
+and its own question when a name is taken, which a person answers better than a rule would. A copy
+into the folder it came from gets Explorer's "name - Copy". Elsewhere the clipboard is this
+program's own, because the toolkit's clipboard carries only text; a taken name gets a free one,
+"name (2).txt", so nothing is overwritten, and a move across file systems copies and then removes.
+A cut that has been pasted clears the clipboard, as Explorer does, so it cannot be moved twice.
+
+Renaming puts a field over the name, with the name selected up to its extension. Enter or a click
+elsewhere keeps the new name, Escape keeps the old one. A taken name is refused rather than
+replaced; a change of case alone is allowed.
+
+The probe copies, moves and renames in a folder it empties first. On Windows a name left over from
+an earlier run would make the shell ask in a dialog, which a test must never wait on. It does not
+touch the Windows clipboard, which is the user's.

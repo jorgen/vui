@@ -16,12 +16,14 @@
 
 #include <knownfolders.h>
 #include <objbase.h>
+#include <oleidl.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <shobjidl.h>
 
 #include <algorithm>
+#include <cstring>
 #include <cwchar>
 #include <optional>
 #include <cwctype>
@@ -796,6 +798,214 @@ std::expected<void, std::string> remove_permanently(const std::string &path)
 const char *trash_name()
 {
   return "Recycle Bin";
+}
+
+namespace
+{
+// A list of paths for SHFileOperation: each ends with a NUL, and the list with another.
+std::wstring path_list(const std::vector<std::string> &paths)
+{
+  std::wstring out;
+  for (const auto &p : paths)
+  {
+    out += wide(p);
+    out.push_back(L'\0');
+  }
+  out.push_back(L'\0');
+  return out;
+}
+
+std::wstring parent_of(std::wstring path)
+{
+  while (!path.empty() && (path.back() == L'\\' || path.back() == L'/'))
+    path.pop_back();
+  const auto slash = path.find_last_of(L"\\/");
+  return slash == std::wstring::npos ? std::wstring() : path.substr(0, slash);
+}
+
+bool same_path(const std::wstring &a, const std::wstring &b)
+{
+  auto x = a, y = b;
+  while (!x.empty() && (x.back() == L'\\' || x.back() == L'/'))
+    x.pop_back();
+  while (!y.empty() && (y.back() == L'\\' || y.back() == L'/'))
+    y.pop_back();
+  std::replace(x.begin(), x.end(), L'/', L'\\');
+  std::replace(y.begin(), y.end(), L'/', L'\\');
+  return CompareStringOrdinal(x.c_str(), int(x.size()), y.c_str(), int(y.size()), TRUE) == CSTR_EQUAL;
+}
+} // namespace
+
+std::expected<void, std::string> transfer(const std::vector<std::string> &items, const std::string &folder, bool move)
+{
+  // The shell's copy and move, which ask what to do when a name is taken and can be undone from
+  // Explorer. Copying into the folder an item is in names the copy "name - Copy", as Explorer does;
+  // the rest of a paste ask before replacing anything.
+  const auto into = wide(folder);
+  std::vector<std::string> beside, elsewhere;
+  for (const auto &item : items)
+  {
+    const bool here = same_path(parent_of(wide(item)), into);
+    if (here && move)
+      continue;
+    (here ? beside : elsewhere).push_back(item);
+  }
+  const auto run = [&](const std::vector<std::string> &from, FILEOP_FLAGS extra) -> std::expected<void, std::string>
+  {
+    if (from.empty())
+      return {};
+    const auto list = path_list(from);
+    auto to = into;
+    to.push_back(L'\0');
+    to.push_back(L'\0');
+    SHFILEOPSTRUCTW op{};
+    op.wFunc = move ? FO_MOVE : FO_COPY;
+    op.pFrom = list.c_str();
+    op.pTo = to.c_str();
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | extra;
+    const int r = SHFileOperationW(&op);
+    if (op.fAnyOperationsAborted)
+      return std::unexpected(std::string(move ? "the move was cancelled" : "the copy was cancelled"));
+    if (r != 0)
+      return std::unexpected(std::string(move ? "could not move it" : "could not copy it") + " (error " + std::to_string(r) + ")");
+    return {};
+  };
+  if (auto r = run(beside, FOF_RENAMEONCOLLISION); !r)
+    return r;
+  return run(elsewhere, 0);
+}
+
+std::expected<void, std::string> rename_item(const std::string &path, const std::string &name)
+{
+  if (name.empty() || name.find_first_of("\\/:*?\"<>|") != std::string::npos)
+    return std::unexpected(std::string("a name cannot hold any of \\ / : * ? \" < > |"));
+  const auto from = wide(path);
+  const auto parent = parent_of(from);
+  const auto to = parent + L"\\" + wide(name);
+  // MoveFileEx without replacing: a name that is taken fails, and a change of case alone does not.
+  if (!MoveFileExW(from.c_str(), to.c_str(), 0))
+  {
+    const DWORD code = GetLastError();
+    if (code == ERROR_ALREADY_EXISTS || code == ERROR_FILE_EXISTS)
+      return std::unexpected("there is already something called \"" + name + "\" here");
+    return std::unexpected(error_text(code));
+  }
+  SHChangeNotify(SHCNE_RENAMEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, from.c_str(), to.c_str());
+  return {};
+}
+
+namespace
+{
+UINT drop_effect_format()
+{
+  static const UINT format = RegisterClipboardFormatW(L"Preferred DropEffect");
+  return format;
+}
+
+// Windows lets one window at a time hold the clipboard open; another program may have it for a
+// moment, so a few tries.
+bool open_clipboard(void *owner)
+{
+  for (int attempt = 0; attempt < 10; ++attempt)
+  {
+    if (OpenClipboard(static_cast<HWND>(owner)))
+      return true;
+    Sleep(10);
+  }
+  return false;
+}
+} // namespace
+
+std::expected<void, std::string> put_on_clipboard(const std::vector<std::string> &items, bool cut, void *owner)
+{
+  // CF_HDROP, a DROPFILES header and the paths after it, and the effect Explorer reads to tell a
+  // cut from a copy.
+  std::wstring paths;
+  for (const auto &item : items)
+  {
+    paths += wide(item);
+    paths.push_back(L'\0');
+  }
+  paths.push_back(L'\0');
+  const SIZE_T bytes = sizeof(DROPFILES) + paths.size() * sizeof(wchar_t);
+  HGLOBAL files = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+  HGLOBAL effect = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+  if (!files || !effect)
+  {
+    if (files)
+      GlobalFree(files);
+    if (effect)
+      GlobalFree(effect);
+    return std::unexpected(std::string("out of memory"));
+  }
+  auto *header = static_cast<DROPFILES *>(GlobalLock(files));
+  header->pFiles = sizeof(DROPFILES);
+  header->fWide = TRUE;
+  std::memcpy(reinterpret_cast<char *>(header) + sizeof(DROPFILES), paths.data(), paths.size() * sizeof(wchar_t));
+  GlobalUnlock(files);
+  *static_cast<DWORD *>(GlobalLock(effect)) = cut ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
+  GlobalUnlock(effect);
+  if (!open_clipboard(owner))
+  {
+    GlobalFree(files);
+    GlobalFree(effect);
+    return std::unexpected(std::string("another program has the clipboard open"));
+  }
+  EmptyClipboard();
+  const bool put = SetClipboardData(CF_HDROP, files) != nullptr;
+  if (!put)
+    GlobalFree(files);
+  if (!SetClipboardData(drop_effect_format(), effect))
+    GlobalFree(effect);
+  CloseClipboard();
+  if (!put)
+    return std::unexpected(std::string("could not put the files on the clipboard"));
+  return {};
+}
+
+std::optional<clipboard_files_t> files_on_clipboard(void *owner)
+{
+  if (!IsClipboardFormatAvailable(CF_HDROP) || !open_clipboard(owner))
+    return std::nullopt;
+  std::optional<clipboard_files_t> out;
+  if (HANDLE data = GetClipboardData(CF_HDROP))
+  {
+    if (auto drop = static_cast<HDROP>(GlobalLock(data)))
+    {
+      out.emplace();
+      const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+      for (UINT i = 0; i < count; ++i)
+      {
+        std::wstring name(DragQueryFileW(drop, i, nullptr, 0), L'\0');
+        DragQueryFileW(drop, i, name.data(), UINT(name.size() + 1));
+        out->items.push_back(narrow(name.c_str()));
+      }
+      GlobalUnlock(data);
+    }
+  }
+  if (out)
+  {
+    if (HANDLE effect = GetClipboardData(drop_effect_format()))
+    {
+      if (const auto *value = static_cast<const DWORD *>(GlobalLock(effect)))
+      {
+        out->cut = (*value & DROPEFFECT_MOVE) != 0 && (*value & DROPEFFECT_COPY) == 0;
+        GlobalUnlock(effect);
+      }
+    }
+  }
+  CloseClipboard();
+  if (out && out->items.empty())
+    out.reset();
+  return out;
+}
+
+void clear_clipboard(void *owner)
+{
+  if (!open_clipboard(owner))
+    return;
+  EmptyClipboard();
+  CloseClipboard();
 }
 
 namespace

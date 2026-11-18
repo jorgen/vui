@@ -1059,6 +1059,12 @@ node_t line_edit_t::view() const
   }
   if (std::exchange(_select_all, false))
     _editor.select_all();
+  if (std::exchange(_select_range, false))
+  {
+    _editor.anchor = {0, _select_from};
+    _editor.caret = {0, _select_to};
+    _editor.clamp();
+  }
   const auto m = mono_metrics(t.mono_size);
   const auto &line = _editor.lines.front();
   const float width = float(std::max(props.columns, 1)) * m.advance;

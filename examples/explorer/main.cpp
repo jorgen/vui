@@ -773,6 +773,8 @@ public:
       if (_entries[i].name == anchor)
         _anchor = long(i);
     }
+    // A name asked for that the cached listing did not have yet: a file just renamed.
+    take_pending_select(scope);
     dirty();
     ui::invalidate(scope, *this);
   }
@@ -978,6 +980,25 @@ public:
       else
         _widths[c] = std::clamp(wanted, float(min_column_width), float(max_column_width));
     }
+  }
+
+  // Where the name in the row showing `name` is, in window layout units, for the field that renames
+  // it: from just after the icon to the end of the Name column. Empty when no row shows it.
+  [[nodiscard]] ui::rect_t name_rect(const std::string &name) const
+  {
+    const auto b = _body.bounds();
+    const auto &o = order();
+    for (std::size_t i = 0; i < o.size(); ++i)
+    {
+      if (_entries[o[i]].name != name)
+        continue;
+      const int y = int(float(b.y) + float(i) * row_height - clamped(float(b.height)));
+      if (y + int(row_height) <= b.y || y >= b.y + b.height)
+        return {};
+      const int x = b.x + 10 + 16 + 8 - 6;
+      return {x, y, std::max(name_column_width() - (x - b.x), 120), int(row_height)};
+    }
+    return {};
   }
 
   // Where the selected row is on screen, for a menu opened from the keyboard.
@@ -1452,6 +1473,10 @@ enum class action_t
   extract_to,
   open_in_archiver,
   compress,
+  cut,
+  copy,
+  paste,
+  rename,
   add_place,
   remove_place,
   place_up,
@@ -1548,6 +1573,34 @@ struct explorer_t
   // What a Delete is asking about: one entry or several.
   std::optional<std::vector<shell::entry_t>> confirming;
   bool confirming_permanent = false;
+
+  // A name being edited in place (G69): the entry's name as it was, and the text in the field.
+  std::optional<std::string> renaming;
+  std::string rename_text;
+  ui::line_edit_t rename_edit;
+  // Everywhere outside the field while it is open: a press there keeps the new name.
+  ui::pressable_t rename_dismiss;
+  // The field in a box as wide as the Name column, a popup of its own over the row.
+  struct rename_field_t
+  {
+    struct props_t
+    {
+      const ui::line_edit_t *edit = nullptr;
+      std::string text;
+      int width = 0;
+      friend bool operator==(const props_t &, const props_t &) = default;
+    };
+    props_t props;
+    [[nodiscard]] ui::node_t view() const
+    {
+      return ui::box_t{.size = {props.width, 0},
+                       .color = ui::theme().menu,
+                       .radius = 4,
+                       .align_x = ui::align_t::stretch,
+                       .children = {ui::mount(*props.edit, {.text = props.text, .columns = 12})}};
+    }
+  };
+  rename_field_t rename_field;
 
   // The context menu, while open: where, for what, and what each item does.
   std::optional<vui::point_t> menu_at;
@@ -2177,21 +2230,106 @@ struct explorer_t
 
   void launch(std::function<std::expected<void, std::string>()> what, std::string done)
   {
+    launch_on(helper, std::move(what), std::move(done), {});
+  }
+
+  // On `worker`, then `then` on the UI thread once it has succeeded.
+  void launch_on(worker_t *worker, std::function<std::expected<void, std::string>()> what, std::string done, std::function<void(ui::scope_t &)> then)
+  {
     auto *p = pipe;
-    helper->post(
-      [this, p, what = std::move(what), done = std::move(done)]
+    worker->post(
+      [this, p, what = std::move(what), done = std::move(done), then = std::move(then)]
       {
         auto r = what();
         p->post_event(
-          [this, r, done](ui::scope_t &scope)
+          [this, r, done, then](ui::scope_t &scope)
           {
             if (r)
-              say(done);
+            {
+              if (!done.empty())
+                say(done);
+              if (then)
+                then(scope);
+            }
             else
               say(r.error(), true);
             scope.invalidate();
           });
       });
+  }
+
+  // ---- cut, copy, paste and rename (G69)
+
+  [[nodiscard]] static void *owner(ui::scope_t &scope)
+  {
+    return scope.window().native().handle;
+  }
+
+  [[nodiscard]] static std::string counted(std::size_t n, const std::string &one)
+  {
+    return n == 1 ? one : grouped(n) + " items";
+  }
+
+  void to_clipboard(ui::scope_t &scope, const std::vector<shell::entry_t> &entries, bool cut)
+  {
+    if (entries.empty())
+      return;
+    std::vector<std::string> items;
+    for (const auto &e : entries)
+      items.push_back(shell::join(path, e.name));
+    if (auto r = shell::put_on_clipboard(items, cut, owner(scope)); !r)
+      say(r.error(), true);
+    else
+      say((cut ? "Cut " : "Copied ") + counted(entries.size(), entries.front().name) + "; Ctrl+V puts " + (entries.size() == 1 ? "it" : "them") + " where you paste");
+  }
+
+  void paste(ui::scope_t &scope, const std::string &into)
+  {
+    const auto files = shell::files_on_clipboard(owner(scope));
+    if (!files)
+    {
+      say("No files were cut or copied to paste", true);
+      return;
+    }
+    const auto items = files->items;
+    const bool cut = files->cut;
+    const auto first = items.front().substr(std::min(items.front().size(), items.front().find_last_of("\\/") + 1));
+    const auto name = into.substr(std::min(into.size(), into.find_last_of("\\/") + 1));
+    launch_on(jobs, [items, into, cut] { return shell::transfer(items, into, cut); }, (cut ? "Moved " : "Copied ") + counted(items.size(), first) + " to " + (name.empty() ? into : name),
+              [this, cut, into](ui::scope_t &scope)
+              {
+                if (cut)
+                  shell::clear_clipboard(owner(scope));
+                if (into == path || shell::parent(into) == path)
+                  go(scope, path, false);
+              });
+  }
+
+  void start_rename(ui::scope_t &scope, const shell::entry_t &entry)
+  {
+    menu_at.reset();
+    renaming = entry.name;
+    rename_text = entry.name;
+    // The name without its extension, as Explorer selects it; all of a folder's, or of ".profile".
+    const auto dot = entry.directory ? std::string::npos : entry.name.rfind('.');
+    rename_edit.select(0, dot == std::string::npos || dot == 0 ? entry.name.size() : dot);
+    ui::request_focus(scope, rename_edit.field());
+  }
+
+  void finish_rename(ui::scope_t &scope, bool keep)
+  {
+    if (!renaming)
+      return;
+    const auto old = *renaming;
+    renaming.reset();
+    ui::request_focus(scope, table.body());
+    auto name = rename_text;
+    while (!name.empty() && name.back() == ' ')
+      name.pop_back();
+    if (!keep || name.empty() || name == old)
+      return;
+    const auto from = shell::join(path, old);
+    launch_on(helper, [from, name] { return shell::rename_item(from, name); }, "Renamed " + old + " to " + name, [this, name](ui::scope_t &scope) { go(scope, path, false, name); });
   }
 
   void ask_to_trash(std::vector<shell::entry_t> entries, bool permanent)
@@ -2287,10 +2425,11 @@ struct explorer_t
     build_menu(scope);
   }
 
-  void build_menu(ui::scope_t &)
+  void build_menu(ui::scope_t &scope)
   {
     menu_actions.clear();
     menu_sub_actions.clear();
+    const bool clipboard_has_files = shell::files_on_clipboard(owner(scope)).has_value();
     std::vector<ui::menu_item_t> items;
     const auto add = [&](ui::menu_item_t item, action_t action, std::size_t extra = 0)
     {
@@ -2368,6 +2507,9 @@ struct explorer_t
           break;
         }
       }
+      rule();
+      add({.label = "Cut", .detail = "Ctrl+X"}, action_t::cut);
+      add({.label = "Copy", .detail = "Ctrl+C"}, action_t::copy);
       rule();
       add({.label = "Copy paths", .detail = "Ctrl+Shift+C"}, action_t::copy_path);
 #if defined(_WIN32)
@@ -2449,6 +2591,12 @@ struct explorer_t
         }
       }
       rule();
+      add({.label = "Cut", .detail = "Ctrl+X"}, action_t::cut);
+      add({.label = "Copy", .detail = "Ctrl+C"}, action_t::copy);
+      if (folder)
+        add({.label = "Paste into folder", .enabled = clipboard_has_files}, action_t::paste);
+      add({.label = "Rename", .detail = "F2"}, action_t::rename);
+      rule();
       add({.label = "Copy path", .detail = "Ctrl+Shift+C"}, action_t::copy_path);
 #if defined(_WIN32)
       add({.label = "Copy path with backslashes"}, action_t::copy_path_native);
@@ -2477,6 +2625,7 @@ struct explorer_t
     else
     {
       add({.label = "Refresh", .detail = "F5"}, action_t::refresh);
+      add({.label = "Paste", .detail = "Ctrl+V", .enabled = clipboard_has_files}, action_t::paste);
       rule();
       add({.label = "Copy path"}, action_t::copy_path);
 #if defined(_WIN32)
@@ -2528,6 +2677,19 @@ struct explorer_t
     const auto folder_of = entry && !entry->directory ? path : target;
     switch (action)
     {
+    case action_t::cut:
+    case action_t::copy:
+      if (entry)
+        to_clipboard(scope, {*entry}, action == action_t::cut);
+      break;
+    case action_t::paste:
+      // Into the folder the menu was opened on, or the one shown.
+      paste(scope, entry && entry->directory ? target : path);
+      break;
+    case action_t::rename:
+      if (entry)
+        start_rename(scope, *entry);
+      break;
     case action_t::open:
       if (entry && entry->directory)
         go(scope, target);
@@ -2628,6 +2790,10 @@ struct explorer_t
     case action_t::copy_path:
     case action_t::copy_path_native:
       copy_paths(scope, entries, action == action_t::copy_path);
+      break;
+    case action_t::cut:
+    case action_t::copy:
+      to_clipboard(scope, entries, action == action_t::cut);
       break;
     case action_t::trash:
     case action_t::remove:
@@ -2913,6 +3079,14 @@ struct explorer_t
                                    status_bar()}};
     // The menu, over everything, where it was opened.
     ui::box_t whole{.color = clear, .events = window_area, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {std::move(page)}};
+    // The name being edited, in a field over its row.
+    if (renaming)
+    {
+      if (const auto r = table.name_rect(*renaming); r.width > 0)
+        whole.children.push_back(ui::at_t{.x = float(r.x),
+                                          .y = float(r.y - 3),
+                                          .children = {ui::mount(rename_field, {.edit = &rename_edit, .text = rename_text, .width = r.width}).on_top(rename_dismiss)}});
+    }
     if (menu_at)
       whole.children.push_back(ui::at_t{.x = float(menu_at->x), .y = float(menu_at->y), .children = {ui::mount(menu, {.items = menu_items}).on_top(menu.dismiss)}});
     if (confirming)
@@ -3001,8 +3175,12 @@ struct explorer_t
     auto place_menus = ui::subscribe<ui::context_event_t>(place_buttons);
     auto navigations = ui::subscribe<ui::navigate_event_t>(window_area);
     auto sidebar_wheel = ui::subscribe<ui::wheel_event_t>(sidebar_area);
+    auto renamed = ui::subscribe<ui::line_edit_event_t>(rename_edit.changed);
+    auto rename_entered = ui::subscribe<ui::line_edit_event_t>(rename_edit.submitted);
+    auto rename_keys = ui::subscribe<vui::key_event_t>(rename_edit.field());
+    auto rename_outside = ui::subscribe<ui::press_event_t>(rename_dismiss);
     auto events = ui::merge(scope, presses, crumbs, places_pressed, filters, toggles, selections, activations, contexts, choices, dismissals, keys, answers, declined, bar_drags, bar_menus, typed,
-                            entered, path_keys, place_menus, navigations, sidebar_wheel);
+                            entered, path_keys, place_menus, navigations, sidebar_wheel, renamed, rename_entered, rename_keys, rename_outside);
     while (auto event = co_await events)
     {
       switch (event->index())
@@ -3095,6 +3273,19 @@ struct explorer_t
       case 20:
         sidebar_scroll = std::clamp(sidebar_scroll - float(std::get<20>(*event).dy) * 3 * 26, 0.0f, sidebar_limit());
         break;
+      case 21:
+        rename_text = std::get<21>(*event).text;
+        break;
+      case 22:
+        finish_rename(scope, true);
+        break;
+      case 23:
+        if (std::get<23>(*event).pressed && std::get<23>(*event).key == vui::key_t::escape)
+          finish_rename(scope, false);
+        break;
+      case 24:
+        finish_rename(scope, true);
+        break;
       case 19:
         // The mouse's back and forward buttons; a menu open closes, a question asked stays.
         if (confirming)
@@ -3163,6 +3354,15 @@ struct explorer_t
         }
         else if (ctrl && shift && key.key == vui::key_t::c)
           copy_paths(scope, table.selected_entries(), true);
+        else if (ctrl && !shift && (key.key == vui::key_t::c || key.key == vui::key_t::x))
+          to_clipboard(scope, table.selected_entries(), key.key == vui::key_t::x);
+        else if (ctrl && !shift && key.key == vui::key_t::v)
+          paste(scope, path);
+        else if (key.key == vui::key_t::f2)
+        {
+          if (const auto *e = table.selected_entry())
+            start_rename(scope, *e);
+        }
         else if (alt && key.key == vui::key_t::enter && shell::has_properties())
         {
           const auto *e = table.selected_entry();
@@ -3294,6 +3494,27 @@ vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::s
     const auto there = [&](const char *name) { return std::filesystem::exists(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(shell::join(folder, name).data()), shell::join(folder, name).size())), error); };
     check(ex.table.shown() == 4 && !there("a.txt") && !there("b.txt") && !there("c.txt") && there("d.txt"), "and Enter deletes the three, and only them");
     expect("d.txt", "the row that took their place is selected");
+
+    // F2 renames in place: the name without its extension is selected, so typing replaces just that.
+    co_await ui_test_pause(loop, 550);
+    ui_test_key(window, vui::key_t::f2);
+    co_await ui_test_pause(loop, 120);
+    check(ex.renaming && *ex.renaming == "d.txt", "F2 edits the selected name");
+    window.impl()->on_input(vui::text_event_t{"renamed"});
+    co_await ui_test_pause(loop, 80);
+    check(ex.rename_text == "renamed.txt", "typing replaces the name and keeps the extension (" + ex.rename_text + ")");
+    ui_test_key(window, vui::key_t::enter);
+    for (int i = 0; i < 250 && !(there("renamed.txt") && ui_test_selected(ex) == "renamed.txt"); ++i)
+      co_await ui_test_pause(loop, 20);
+    check(!ex.renaming && there("renamed.txt") && !there("d.txt"), "Enter renames it");
+    expect("renamed.txt", "and the renamed row is selected");
+    co_await ui_test_pause(loop, 120);
+    ui_test_key(window, vui::key_t::f2);
+    co_await ui_test_pause(loop, 120);
+    window.impl()->on_input(vui::text_event_t{"other"});
+    ui_test_key(window, vui::key_t::escape);
+    co_await ui_test_pause(loop, 200);
+    check(!ex.renaming && there("renamed.txt") && !there("other.txt"), "Escape leaves the name as it was");
 
     // The Name column's edge, dragged 100 to the left, and a double click on it to fill again.
     const int before = ex.table.name_column_width();
@@ -3664,6 +3885,62 @@ int probe_and_check()
         check(again && read(shell::join(back, "a.txt")) == "changed\n", std::string(suffix) + ": extracting again keeps a file that is there");
       }
     }
+  }
+  // Copying, moving and renaming (G69), in a folder of their own.
+  {
+    const auto here = shell::join(scratch, "transfer");
+    const auto read = [&](const std::string &p)
+    {
+      std::ifstream in(native(p), std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(in), {});
+    };
+    const auto into = shell::join(here, "into");
+    // Empty to start with: on Windows a name already taken in `into` would ask, in a dialog, what to do.
+    std::filesystem::remove_all(native(here), ec);
+    std::filesystem::create_directories(native(shell::join(here, "tree")), ec);
+    std::filesystem::create_directories(native(into), ec);
+    std::ofstream(native(shell::join(here, "a.txt")), std::ios::binary) << "alpha\n";
+    std::ofstream(native(shell::join(shell::join(here, "tree"), "inner.txt")), std::ios::binary) << "inner\n";
+    const auto copied = shell::transfer({shell::join(here, "a.txt"), shell::join(here, "tree")}, into, false);
+    check(copied && read(shell::join(into, "a.txt")) == "alpha\n" && read(shell::join(shell::join(into, "tree"), "inner.txt")) == "inner\n" && read(shell::join(here, "a.txt")) == "alpha\n",
+          "files and folders are copied into a folder" + (copied ? std::string() : ": " + copied.error()));
+    // Into the folder it is in: a second one beside it, under a free name.
+    const auto beside = shell::transfer({shell::join(into, "a.txt")}, into, false);
+    std::size_t copies = 0;
+    for (const auto &item : std::filesystem::directory_iterator(native(into), ec))
+      copies += item.path().filename().u8string().starts_with(u8"a") && item.path().extension() == ".txt" ? 1 : 0;
+    check(beside && copies == 2, "copying into its own folder makes a second one beside it (" + std::to_string(copies) + ")");
+    // Into a folder of its own: `here` has a "tree" already, and Windows would ask about it.
+    const auto elsewhere = shell::join(here, "moved");
+    std::filesystem::create_directories(native(elsewhere), ec);
+    const auto moved = shell::transfer({shell::join(into, "tree")}, elsewhere, true);
+    check(moved && !std::filesystem::exists(native(shell::join(into, "tree"))) && read(shell::join(shell::join(elsewhere, "tree"), "inner.txt")) == "inner\n",
+          "moving takes it from where it was");
+    // Moving where it is already is nothing, not an error.
+    const auto stays = shell::transfer({shell::join(here, "a.txt")}, here, true);
+    check(stays && read(shell::join(here, "a.txt")) == "alpha\n", "moving into its own folder leaves it");
+#if !defined(_WIN32)
+    // Windows' shell says so in a dialog of its own; elsewhere the explorer refuses.
+    const auto inside = shell::transfer({shell::join(here, "tree")}, shell::join(here, "tree"), false);
+    check(!inside, "a folder is not copied into itself");
+#endif
+    const auto renamed = shell::rename_item(shell::join(here, "a.txt"), "b.txt");
+    check(renamed && read(shell::join(here, "b.txt")) == "alpha\n" && !std::filesystem::exists(native(shell::join(here, "a.txt"))), "a file is renamed" + (renamed ? std::string() : ": " + renamed.error()));
+    std::ofstream(native(shell::join(here, "c.txt")), std::ios::binary) << "gamma\n";
+    const auto taken = shell::rename_item(shell::join(here, "c.txt"), "b.txt");
+    check(!taken && read(shell::join(here, "b.txt")) == "alpha\n", "a name that is taken is refused");
+    const auto cased = shell::rename_item(shell::join(here, "c.txt"), "C.txt");
+    check(cased.has_value(), "a change of case alone is allowed" + (cased ? std::string() : ": " + cased.error()));
+    check(!shell::rename_item(shell::join(here, "b.txt"), "x/y.txt"), "a name holding a separator is refused");
+#if !defined(_WIN32)
+    // On Windows the clipboard is the user's; elsewhere the explorer's own, which is safe to try.
+    const auto put = shell::put_on_clipboard({shell::join(here, "b.txt")}, true, nullptr);
+    const auto back = shell::files_on_clipboard(nullptr);
+    check(put && back && back->cut && back->items.size() == 1 && back->items.front() == shell::join(here, "b.txt"), "files cut are on the clipboard");
+    shell::clear_clipboard(nullptr);
+    check(!shell::files_on_clipboard(nullptr), "and gone once pasted");
+#endif
+    std::filesystem::remove_all(native(here), ec);
   }
   // The places, saved and read back, in a settings folder of the probe's own.
   {

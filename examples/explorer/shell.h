@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -186,6 +187,33 @@ std::expected<void, std::string> trash(const std::string &path);
 std::expected<void, std::string> remove_permanently(const std::string &path);
 // "Recycle Bin" or "Trash".
 [[nodiscard]] const char *trash_name();
+
+// ---- copying, moving and renaming (G69)
+
+// Copies files and folders, with everything in them, into `folder`, or moves them there. On Windows
+// it is the shell's own operation: its progress, its questions when a name is taken, and undo in
+// Explorer. Elsewhere a name that is taken gets a free one beside it, "name (2).txt", so nothing is
+// overwritten. Copying into the folder something is in makes a second one beside it; moving it there
+// does nothing. A folder is never put inside itself. Waits until it is done: call it on a worker.
+std::expected<void, std::string> transfer(const std::vector<std::string> &items, const std::string &folder, bool move);
+// Gives a file or folder a new name in the folder it is in. A name that is taken, or one that holds
+// a path separator, is refused; a change of case alone is allowed.
+std::expected<void, std::string> rename_item(const std::string &path, const std::string &name);
+
+// Files cut or copied, waiting to be pasted.
+struct clipboard_files_t
+{
+  std::vector<std::string> items;
+  bool cut = false;
+};
+// On Windows the system's clipboard, in the form Explorer and other programs read and write, so
+// files copied here paste there and the other way round; `owner` is the window putting them there.
+// Elsewhere it is this program's own, until the toolkit's clipboard carries files.
+std::expected<void, std::string> put_on_clipboard(const std::vector<std::string> &items, bool cut, void *owner);
+// What is on it, or nothing when it holds no files.
+[[nodiscard]] std::optional<clipboard_files_t> files_on_clipboard(void *owner);
+// After cut files have been pasted: they are where they were put, and are not to be moved again.
+void clear_clipboard(void *owner);
 
 // What the system file manager is called, for "Show in ...".
 [[nodiscard]] const char *file_manager_name();

@@ -465,6 +465,14 @@ public:
   {
     _select_all = true;
   }
+  // Select bytes [from, to) of the text when it is next shown: a file's name without its
+  // extension, when it is renamed.
+  void select(std::size_t from, std::size_t to) noexcept
+  {
+    _select_from = from;
+    _select_to = to;
+    _select_range = true;
+  }
 
 private:
   void keep_caret_in_view();
@@ -474,6 +482,9 @@ private:
   // parent never applied is undone there.
   mutable detail::text_editor_t _editor{false};
   mutable bool _select_all = false;
+  mutable bool _select_range = false;
+  std::size_t _select_from = 0;
+  std::size_t _select_to = 0;
   float _scroll = 0;
 };
 
