@@ -181,6 +181,9 @@ struct drag_event_t
   point_t position;
   modifier_t modifiers = modifier_t::none;
   int clicks = 1;
+  // On the `end` of a press that ui::start_drag turned into a drag and drop: what the target did
+  // with it, `none` when nothing took it.
+  drop_action_t dropped = drop_action_t::none;
 };
 
 // The right button pressed on a pressable: where a context menu opens (G53). It goes to the topmost
@@ -233,6 +236,26 @@ struct navigate_event_t
   bool forward = false;
   point_t position;
   modifier_t modifiers = modifier_t::none;
+};
+
+// Something dragged over a pressable (G70): files from another program, or what ui::start_drag
+// began in this window. It goes to the topmost pressable under the pointer that something
+// subscribes to drops on: `enter` when the drag comes onto it, `over` as it moves there, and then
+// `leave`, or `drop` when it is let go there and the pressable has accepted it. The pressable
+// answers with accept_drop(), which holds until the next `enter`; `none` refuses. Positions are
+// window layout units.
+struct drop_event_t
+{
+  const pressable_t *source = nullptr;
+  drop_phase_t phase = drop_phase_t::enter;
+  point_t position;
+  modifier_t modifiers = modifier_t::none;
+  // What the dragging side allows.
+  drop_action_t allowed = drop_action_t::none;
+  // What is dragged; where the window system shows it only on the drop, empty until then.
+  std::shared_ptr<const drag_data_t> data;
+  // The drag began in this window.
+  bool from_here = false;
 };
 
 namespace detail
@@ -426,7 +449,8 @@ class pressable_t : public detail::source_t<press_event_t>,
                     public detail::source_t<wheel_event_t>,
                     public detail::source_t<hover_event_t>,
                     public detail::source_t<context_event_t>,
-                    public detail::source_t<navigate_event_t>
+                    public detail::source_t<navigate_event_t>,
+                    public detail::source_t<drop_event_t>
 {
   using presses_t = detail::source_t<press_event_t>;
   using keys_t = detail::source_t<key_event_t>;
@@ -436,6 +460,7 @@ class pressable_t : public detail::source_t<press_event_t>,
   using hovers_t = detail::source_t<hover_event_t>;
   using contexts_t = detail::source_t<context_event_t>;
   using navigates_t = detail::source_t<navigate_event_t>;
+  using drops_t = detail::source_t<drop_event_t>;
 
 public:
   pressable_t() = default;
@@ -457,6 +482,7 @@ public:
     , hovers_t(std::move(other))
     , contexts_t(std::move(other))
     , navigates_t(std::move(other))
+    , drops_t(std::move(other))
     , _focusable(other._focusable)
     , _text_input(other._text_input)
   {
@@ -471,6 +497,7 @@ public:
     hovers_t::operator=(std::move(other));
     contexts_t::operator=(std::move(other));
     navigates_t::operator=(std::move(other));
+    drops_t::operator=(std::move(other));
     _focusable = other._focusable;
     _text_input = other._text_input;
     return *this;
@@ -519,6 +546,17 @@ public:
   {
     return _laid_out;
   }
+  // The answer to a drag over it (G70): what a drop would do, `none` to refuse. Set from a behaviour
+  // on drop_event_t `enter` or `over`; the window system is told it with the next event, so it can
+  // change with the modifiers or with where over the pressable the pointer is.
+  void accept_drop(drop_action_t action) noexcept
+  {
+    _drop_answer = action;
+  }
+  [[nodiscard]] drop_action_t drop_answer() const noexcept
+  {
+    return _drop_answer;
+  }
 
 private:
   friend class detail::runtime_t;
@@ -528,6 +566,7 @@ private:
   bool _held = false;
   bool _focused = false;
   bool _focus_visible = false;
+  drop_action_t _drop_answer = drop_action_t::none;
   rect_t _bounds;
   rect_t _laid_out;
   std::uint64_t _bounds_frame = 0;
@@ -1497,7 +1536,18 @@ namespace detail
 {
 void invalidate_component(runtime_t &runtime, void *component, node_t (*view)(const void *)) noexcept;
 void request_focus(runtime_t &runtime, const pressable_t *source) noexcept;
+bool start_drag(runtime_t &runtime, std::vector<std::string> paths, drop_action_t allowed);
 } // namespace detail
+
+// Begin dragging `paths` from the pressable the left button is held on (G70), from its
+// drag_event_t `move` once the pointer has gone far enough to mean it. Inside the window the drag
+// goes to pressables subscribed to drop_event_t; past the window's edge the window system carries it
+// to other programs, where the backend can. The pressable gets no more moves; its `end` comes when
+// the drag is over, with `dropped` saying what the target did. False when no button is held there.
+inline bool start_drag(scope_t &scope, std::vector<std::string> paths, drop_action_t allowed = drop_action_t::copy | drop_action_t::move)
+{
+  return detail::start_drag(detail::scope_runtime(scope), std::move(paths), allowed);
+}
 
 // Give `source` keyboard focus, from a behaviour, as soon as a box showing it has been drawn: a field
 // that has just appeared is not on screen until the next frame (G56). The focus shows its ring, as

@@ -1076,3 +1076,41 @@ replaced; a change of case alone is allowed.
 The probe copies, moves and renames in a folder it empties first. On Windows a name left over from
 an earlier run would make the shell ask in a dialog, which a test must never wait on. It does not
 touch the Windows clipboard, which is the user's.
+
+## G70. Drag and drop
+
+A window reports `drop_event_t` (enter, over, leave, drop) for something the window system drags
+over it, with what is dragged as `drag_data_t`, paths and text, shared by every event of one drag.
+The program answers with `window_t::accept_drop`. The window system wants that answer at once, in
+the call that asks, and the program's code runs a turn later, so what the dragging program hears
+is the answer given by the time of its next question. It asks on every move, so the lag is one
+move. `window_t::start_drag` hands files to the window system to drag, while the left button is
+held, and a `drag_end_event_t` says what the target did.
+
+In the UI, a pressable subscribes to `ui::drop_event_t` to take drops, and the topmost one under
+the pointer gets them, as the wheel does. It answers with `pressable_t::accept_drop`, which holds
+until the next `enter`; the runtime tells the window system. `ui::start_drag`, from a drag move
+on the pressable the button is held on, begins dragging paths. Inside the window the runtime
+carries the drag itself, so moving something from one pane to another involves nothing of the
+window system: no modal loop, nothing a test cannot drive, and the same on every platform. Only
+when the pointer crosses the window's edge does it go to the window system, and if it comes back
+it comes back as the window system's drop events. The pressable it began on gets no more moves;
+its drag `end` comes when the drag is over, with `dropped` saying what the target did. A drag is
+not a press, at either end.
+
+On Windows the window registers an IDropTarget, and reports the shell's drag image through
+IDropTargetHelper. A drag out is SHDoDragDrop with the shell's own data object for the paths, which
+other programs read as CF_HDROP and Explorer as its own items. Its modal loop is started from a
+posted message, from the message pump as a size loop is, and the loop turns inside it on the
+modal timer (G47), so the window still draws and still answers drops on itself. OLE takes the
+button's release, so the window is told the button is up once the drag has said how it ended.
+OLE needs a single-threaded apartment; a thread in the multithreaded one gets no drag and drop
+rather than no windows.
+
+X11, Wayland and macOS have only the drag inside the window so far: `start_drag` returns false
+there, so a drag stays the runtime's, and leaving the window goes nowhere. Drops from other
+programs are not received there yet.
+
+The Win32 test makes OLE's calls on the registered target directly, with the shell's data object
+for a real file. That is everything of a drop but the mouse, which a test must never move. The drag
+out is not tested; SHDoDragDrop drops wherever the real pointer is.

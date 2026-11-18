@@ -27,6 +27,7 @@ Copyright (c) 2026 Jørgen Lind
 #include <algorithm>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -846,5 +847,175 @@ TEST_CASE("ui context menu: a submenu opens beside its row, by pointer and by ke
           co_await settle(loop);
           REQUIRE(root.chosen.size() == 4);
           CHECK(root.chosen[3] == std::pair<std::size_t, std::size_t>{2, ui::menu_choice_t::top});
+        });
+}
+
+namespace
+{
+// A pressable to drag from, one that takes drops, and the events each saw (G70).
+struct drag_root_t
+{
+  ui::pressable_t from, to;
+  vui::drop_action_t answer = vui::drop_action_t::move;
+  bool started = false;
+  int presses = 0;
+  std::vector<ui::drop_event_t> drops;
+  std::vector<ui::drag_event_t> ends;
+
+  ui::node_t view() const
+  {
+    return ui::box_t{.size = {400, 300},
+                     .color = {0, 0, 0, 0},
+                     .align_x = ui::align_t::start,
+                     .align_y = ui::align_t::start,
+                     .children = {ui::row_t{.gap = 50,
+                                            .children = {ui::box_t{.size = {100, 100}, .color = {1, 0, 0, 1}, .events = from},
+                                                         ui::box_t{.size = {100, 100}, .color = {0, 1, 0, 1}, .events = to}}}}};
+  }
+  ui::behaviour_t behave(ui::scope_t &scope)
+  {
+    auto drags = ui::subscribe<ui::drag_event_t>(from);
+    auto dropped = ui::subscribe<ui::drop_event_t>(to);
+    auto pressed = ui::subscribe<ui::press_event_t>(from, to);
+    auto events = ui::merge(scope, drags, dropped, pressed);
+    while (auto event = co_await events)
+    {
+      if (event->index() == 0)
+      {
+        const auto &drag = std::get<0>(*event);
+        if (drag.phase == ui::drag_phase_t::begin)
+          started = false;
+        else if (drag.phase == ui::drag_phase_t::move && !started)
+          started = ui::start_drag(scope, {"/x/a.txt"}, vui::drop_action_t::copy | vui::drop_action_t::move);
+        else if (drag.phase == ui::drag_phase_t::end)
+          ends.push_back(drag);
+      }
+      else if (event->index() == 1)
+      {
+        const auto &drop = std::get<1>(*event);
+        drops.push_back(drop);
+        if (drop.phase == vui::drop_phase_t::enter || drop.phase == vui::drop_phase_t::over)
+          to.accept_drop(answer);
+      }
+      else
+        ++presses;
+    }
+  }
+};
+
+vio::task_t<void> drag_across(vio::event_loop_t &loop, vui::window_t &window, const frame_t &frame, const drag_root_t &root, bool via_outside)
+{
+  const auto a = rect_of(frame, &root.from);
+  const auto b = rect_of(frame, &root.to);
+  const vui::point_t start{a.x + 50.0, a.y + 50.0};
+  const vui::point_t end{b.x + 50.0, b.y + 50.0};
+  window.impl()->on_input(vui::pointer_move_event_t{start});
+  window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, start});
+  window.impl()->on_input(vui::pointer_move_event_t{{start.x + 10, start.y}});
+  co_await settle(loop);
+  if (via_outside)
+  {
+    window.impl()->on_input(vui::pointer_move_event_t{{-20, start.y}});
+    co_await settle(loop);
+  }
+  window.impl()->on_input(vui::pointer_move_event_t{end});
+  co_await settle(loop);
+  window.impl()->on_input(vui::pointer_move_event_t{{end.x + 5, end.y}});
+  co_await settle(loop);
+  window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, {end.x + 5, end.y}});
+  co_await settle(loop);
+}
+} // namespace
+
+TEST_CASE("ui drag and drop: a drag inside the window drops where it is accepted")
+{
+  drag_root_t root;
+  frame_t frame;
+  drive(root, frame,
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          co_await drag_across(loop, window, frame, root, false);
+          REQUIRE(root.drops.size() >= 2);
+          CHECK(root.drops.front().phase == vui::drop_phase_t::enter);
+          CHECK(root.drops.back().phase == vui::drop_phase_t::drop);
+          REQUIRE(root.drops.back().data);
+          CHECK(root.drops.back().data->paths == std::vector<std::string>{"/x/a.txt"});
+          CHECK(root.drops.back().from_here);
+          CHECK(root.drops.back().allowed == (vui::drop_action_t::copy | vui::drop_action_t::move));
+          REQUIRE(root.ends.size() == 1);
+          CHECK(root.ends[0].dropped == vui::drop_action_t::move);
+          // A drag is not a press, on either end.
+          CHECK(root.presses == 0);
+        });
+}
+
+TEST_CASE("ui drag and drop: a refused drag leaves, and its source hears nothing was done")
+{
+  drag_root_t root;
+  root.answer = vui::drop_action_t::none;
+  frame_t frame;
+  drive(root, frame,
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          co_await drag_across(loop, window, frame, root, false);
+          REQUIRE(!root.drops.empty());
+          CHECK(root.drops.back().phase == vui::drop_phase_t::leave);
+          REQUIRE(root.ends.size() == 1);
+          CHECK(root.ends[0].dropped == vui::drop_action_t::none);
+          CHECK(window.cursor() == vui::cursor_t::arrow);
+        });
+}
+
+TEST_CASE("ui drag and drop: where the window system cannot take a drag, leaving the window keeps it")
+{
+  drag_root_t root;
+  frame_t frame;
+  drive(root, frame,
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          co_await drag_across(loop, window, frame, root, true);
+          REQUIRE(root.ends.size() == 1);
+          CHECK(root.ends[0].dropped == vui::drop_action_t::move);
+          CHECK(root.drops.back().phase == vui::drop_phase_t::drop);
+        });
+}
+
+TEST_CASE("ui drag and drop: a drag from another program goes to the pressable under it, and is answered")
+{
+  drag_root_t root;
+  root.answer = vui::drop_action_t::copy;
+  frame_t frame;
+  drive(root, frame,
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          const auto b = rect_of(frame, &root.to);
+          const vui::point_t at{b.x + 40.0, b.y + 40.0};
+          auto data = std::make_shared<const vui::drag_data_t>(vui::drag_data_t{{"C:/in/one.txt", "C:/in/two.txt"}, {}});
+          const auto offer = [&](vui::drop_phase_t phase, vui::point_t p)
+          { window.impl()->on_input(vui::drop_event_t{phase, p, vui::modifier_t::none, vui::drop_action_t::copy | vui::drop_action_t::link, data}); };
+          offer(vui::drop_phase_t::enter, {10, 10});
+          co_await settle(loop);
+          CHECK(root.drops.empty());
+          offer(vui::drop_phase_t::over, at);
+          co_await settle(loop);
+          offer(vui::drop_phase_t::over, {at.x + 2, at.y});
+          co_await settle(loop);
+          CHECK(window.impl()->drop_answer == vui::drop_action_t::copy);
+          offer(vui::drop_phase_t::drop, {at.x + 2, at.y});
+          co_await settle(loop);
+          REQUIRE(!root.drops.empty());
+          CHECK(root.drops.front().phase == vui::drop_phase_t::enter);
+          CHECK(root.drops.back().phase == vui::drop_phase_t::drop);
+          CHECK_FALSE(root.drops.back().from_here);
+          REQUIRE(root.drops.back().data);
+          CHECK(root.drops.back().data->paths.size() == 2);
+          CHECK(root.ends.empty());
+          // Off the pressable again, the answer is no.
+          offer(vui::drop_phase_t::enter, at);
+          co_await settle(loop);
+          offer(vui::drop_phase_t::over, {10, 10});
+          co_await settle(loop);
+          CHECK(window.impl()->drop_answer == vui::drop_action_t::none);
+          CHECK(root.drops.back().phase == vui::drop_phase_t::leave);
         });
 }

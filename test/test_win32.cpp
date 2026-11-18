@@ -46,6 +46,13 @@ Copyright (c) 2026 Jørgen Lind
 
 #include <windows.h>
 
+#include <ole2.h>
+#include <shellapi.h>
+#include <shlobj.h>
+
+#include <algorithm>
+#include <cwctype>
+
 #include <d3d12.h>
 #include <dxgi1_6.h>
 
@@ -342,4 +349,88 @@ TEST_CASE("win32: a GL context draws or reports that GL is not available")
   }(loop));
 }
 
+#endif
+
+#if defined(_WIN32)
+TEST_CASE("win32: the window's drop target reports a drag and answers with what accept_drop said")
+{
+  // OLE's calls made straight on the target RegisterDragDrop put on the window, with the shell's
+  // own data object for a file: everything of a drop but the mouse, which a test must not move.
+  vio::event_loop_t loop;
+  run_gui_test(loop, [](vio::event_loop_t &loop) -> vio::task_t<void> {
+    auto display = open_win32(loop);
+    {
+      auto window = vui::window_t::create(display, {.title = "drop target", .size = {320, 200}, .visible = false});
+      REQUIRE(window.has_value());
+      auto drops = window->subscribe<vui::drop_event_t>();
+      const HWND hwnd = hwnd_of(*window);
+      auto *target = static_cast<IDropTarget *>(GetPropW(hwnd, L"OleDropTargetInterface"));
+      REQUIRE(target != nullptr);
+
+      wchar_t self[MAX_PATH] = {};
+      GetModuleFileNameW(nullptr, self, MAX_PATH);
+      PIDLIST_ABSOLUTE item = nullptr;
+      REQUIRE(SUCCEEDED(SHParseDisplayName(self, nullptr, &item, 0, nullptr)));
+      PIDLIST_ABSOLUTE parent = ILClone(item);
+      ILRemoveLastID(parent);
+      PCUITEMID_CHILD child = ILFindLastID(item);
+      IDataObject *data = nullptr;
+      REQUIRE(SUCCEEDED(SHCreateDataObject(parent, 1, &child, nullptr, IID_PPV_ARGS(&data))));
+      // What other programs read from a drag of files, and what start_drag hands out.
+      FORMATETC files{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+      CHECK(data->QueryGetData(&files) == S_OK);
+
+      POINT origin{12, 20};
+      ClientToScreen(hwnd, &origin);
+      const POINTL at{origin.x, origin.y};
+      DWORD effect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+      target->DragEnter(data, MK_LBUTTON, at, &effect);
+      CHECK(effect == DROPEFFECT_NONE);
+      auto entered = co_await drops;
+      REQUIRE(entered.has_value());
+      CHECK(entered->phase == vui::drop_phase_t::enter);
+      CHECK(entered->position == vui::point_t{12, 20});
+      CHECK(entered->allowed == (vui::drop_action_t::copy | vui::drop_action_t::move));
+      REQUIRE(entered->data);
+      REQUIRE(entered->data->paths.size() == 1);
+      std::string name = entered->data->paths.front();
+      std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+      CHECK(name.ends_with("vui_tests.exe"));
+
+      window->accept_drop(vui::drop_action_t::copy);
+      effect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+      target->DragOver(MK_LBUTTON | MK_CONTROL, at, &effect);
+      CHECK(effect == DROPEFFECT_COPY);
+      auto over = co_await drops;
+      REQUIRE(over.has_value());
+      CHECK(over->phase == vui::drop_phase_t::over);
+      CHECK(vui::has(over->modifiers, vui::modifier_t::control));
+      CHECK(over->data == entered->data);
+
+      // An answer the drag does not allow is no answer.
+      window->accept_drop(vui::drop_action_t::link);
+      effect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+      target->DragOver(MK_LBUTTON, at, &effect);
+      CHECK(effect == DROPEFFECT_NONE);
+      (void)co_await drops;
+
+      window->accept_drop(vui::drop_action_t::move);
+      effect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+      target->Drop(data, 0, at, &effect);
+      CHECK(effect == DROPEFFECT_MOVE);
+      auto dropped = co_await drops;
+      REQUIRE(dropped.has_value());
+      CHECK(dropped->phase == vui::drop_phase_t::drop);
+      REQUIRE(dropped->data);
+      CHECK(dropped->data->paths.size() == 1);
+      // The next drag starts unanswered.
+      CHECK(window->impl()->drop_answer == vui::drop_action_t::none);
+
+      data->Release();
+      ILFree(parent);
+      ILFree(item);
+    }
+    loop.stop();
+  }(loop));
+}
 #endif

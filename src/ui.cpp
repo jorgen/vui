@@ -485,6 +485,9 @@ public:
     _stats.components = _slots.size();
     if (_has_pointer)
       hover(_pointer);
+    // An answer to a drag given since the last event: told now rather than at the next move.
+    if (_drop_target)
+      report_drop_answer();
     if (_config.on_layout)
       _config.on_layout(_items);
     if (_config.on_display_list)
@@ -505,9 +508,209 @@ public:
     hover(_pointer);
     if (_hovered)
       hovering(_hovered, true);
+    if (_drag)
+    {
+      dragging(modifiers);
+      return;
+    }
     if (_held.source)
       drag(_held.source, drag_phase_t::move, _pointer, modifiers, _clicks);
     update_cursor();
+  }
+
+  // ---- drag and drop (G70). A drag begun by ui::start_drag stays the runtime's own while the
+  // pointer is inside the window, so nothing of the window system is involved in moving something
+  // from one pane to another; past the window's edge it is handed to the window system, where the
+  // backend can, and comes back -- if it does -- as the window system's drop events.
+  bool start_drag(std::vector<std::string> paths, drop_action_t allowed)
+  {
+    if (!_held.source || _drag)
+      return false;
+    _drag = drag_session_t{_held.source, std::make_shared<const drag_data_t>(drag_data_t{std::move(paths), {}}), allowed};
+    _dragged = true;
+    _drop_data = _drag->data;
+    _drop_allowed = allowed;
+    _drop_from_here = true;
+    dragging(modifier_t::none);
+    return true;
+  }
+
+  // The pointer moved while the runtime carries a drag.
+  void dragging(modifier_t modifiers)
+  {
+    if (_drag->handed_off)
+      return;
+    _drop_modifiers = modifiers;
+    const bool outside = _pointer.x < 0 || _pointer.y < 0 || _pointer.x >= _logical.width || _pointer.y >= _logical.height;
+    if (outside && !_drag->refused_off)
+    {
+      drop_leave();
+      if (_window.start_drag(_drag->data->paths, _drag->allowed))
+      {
+        _drag->handed_off = true;
+        return;
+      }
+      // This window system cannot take it: it stays inside, and leaving goes nowhere.
+      _drag->refused_off = true;
+    }
+    drop_over(_pointer);
+  }
+
+  // Whether a pressable is still on screen: one that was is gone when its component unmounted.
+  [[nodiscard]] bool shown(const pressable_t *source) const noexcept
+  {
+    for (const auto &item : _items)
+    {
+      if (item.box->events.source == source)
+        return true;
+    }
+    return false;
+  }
+
+  [[nodiscard]] const pressable_t *drop_target_at(point_t position) const noexcept
+  {
+    for (auto it = _items.rbegin(); it != _items.rend(); ++it)
+    {
+      const auto *source = it->box->events.source;
+      if (!source || !it->rect.contains(position))
+        continue;
+      if (static_cast<const detail::source_t<drop_event_t> &>(*source).subscribed())
+        return source;
+    }
+    return nullptr;
+  }
+
+  void drop_emit(const pressable_t *target, drop_phase_t phase, point_t position)
+  {
+    auto &drops = static_cast<detail::source_t<drop_event_t> &>(*const_cast<pressable_t *>(target));
+    drops.emit(drop_event_t{target, phase, position, _drop_modifiers, _drop_allowed, _drop_data, _drop_from_here}, *this);
+  }
+
+  // The drag at `position`: leave what it was over, enter what it is over now, or move over it.
+  void drop_over(point_t position)
+  {
+    if (_drop_target && !shown(_drop_target))
+      _drop_target = nullptr;
+    const auto *target = drop_target_at(position);
+    if (target != _drop_target)
+    {
+      if (_drop_target)
+        drop_emit(_drop_target, drop_phase_t::leave, position);
+      _drop_target = target;
+      if (target)
+      {
+        const_cast<pressable_t *>(target)->_drop_answer = drop_action_t::none;
+        drop_emit(target, drop_phase_t::enter, position);
+      }
+    }
+    else if (target)
+      drop_emit(target, drop_phase_t::over, position);
+    report_drop_answer();
+  }
+
+  void drop_leave()
+  {
+    if (_drop_target && shown(_drop_target))
+      drop_emit(_drop_target, drop_phase_t::leave, _pointer);
+    _drop_target = nullptr;
+    report_drop_answer();
+  }
+
+  // What the pressable under the drag answers, as far as the drag allows it.
+  [[nodiscard]] drop_action_t drop_answer() const noexcept
+  {
+    if (!_drop_target || !shown(_drop_target))
+      return drop_action_t::none;
+    return _drop_target->_drop_answer & _drop_allowed;
+  }
+
+  // The answer to the window system, and while the drag is the runtime's own, to the pointer.
+  void report_drop_answer()
+  {
+    const auto answer = drop_answer();
+    if (answer != _reported_answer)
+    {
+      _reported_answer = answer;
+      _window.accept_drop(answer);
+    }
+    if (_drag && !_drag->handed_off)
+    {
+      const auto wanted = answer == drop_action_t::none ? cursor_t::not_allowed : cursor_t::arrow;
+      if (wanted != _cursor)
+      {
+        _cursor = wanted;
+        _window.set_cursor(wanted);
+      }
+    }
+  }
+
+  // Let go over the pressable under it: dropped there if it accepted, else nothing.
+  drop_action_t drop_here(point_t position)
+  {
+    drop_over(position);
+    const auto answer = drop_answer();
+    if (_drop_target && answer != drop_action_t::none)
+      drop_emit(_drop_target, drop_phase_t::drop, position);
+    else if (_drop_target)
+      drop_emit(_drop_target, drop_phase_t::leave, position);
+    _drop_target = nullptr;
+    _drop_data.reset();
+    _drop_from_here = false;
+    report_drop_answer();
+    return answer;
+  }
+
+  // The drag is over: its pressable hears how.
+  void finish_drag(drop_action_t result, point_t position, modifier_t modifiers)
+  {
+    const auto session = std::move(*_drag);
+    _drag.reset();
+    if (shown(session.source))
+    {
+      auto &drags = static_cast<detail::source_t<drag_event_t> &>(*const_cast<pressable_t *>(session.source));
+      drags.emit(drag_event_t{session.source, drag_phase_t::end, position, modifiers, _clicks, result}, *this);
+    }
+    _cursor = cursor_t::hidden;
+    update_cursor();
+  }
+
+  // The window system's drop events: a drag from elsewhere, or this window's own come back.
+  void window_drop(const vui::drop_event_t &event)
+  {
+    const auto position = to_logical(event.position);
+    _drop_modifiers = event.modifiers;
+    switch (event.phase)
+    {
+    case drop_phase_t::enter:
+      _drop_data = event.data;
+      _drop_allowed = event.allowed;
+      _drop_from_here = _drag && _drag->handed_off;
+      _drop_target = nullptr;
+      drop_over(position);
+      break;
+    case drop_phase_t::over:
+      if (event.data)
+        _drop_data = event.data;
+      drop_over(position);
+      break;
+    case drop_phase_t::leave:
+      drop_leave();
+      _drop_data.reset();
+      break;
+    case drop_phase_t::drop:
+      if (event.data)
+        _drop_data = event.data;
+      _drop_allowed = event.allowed;
+      (void)drop_here(position);
+      break;
+    }
+  }
+
+  // A drag handed to the window system has ended there.
+  void window_drag_ended(const drag_end_event_t &event)
+  {
+    if (_drag && _drag->handed_off)
+      finish_drag(event.action, _pointer, modifier_t::none);
   }
 
   // The pointer's shape: the cursor of the topmost box under it that takes events, or the arrow.
@@ -647,14 +850,24 @@ public:
       }
       return;
     }
+    // A drag the runtime carries ends where it is let go; one the window system has ends when the
+    // window system says, and its pressable hears of it then.
+    if (_drag && !_drag->handed_off)
+    {
+      _drop_modifiers = event.modifiers;
+      const auto result = drop_here(position);
+      finish_drag(result, position, event.modifiers);
+    }
     auto held = std::exchange(_held, {});
+    const bool dragged = std::exchange(_dragged, false);
     if (held.source)
     {
       set_flag(held.source, &pressable_t::_held, false);
-      drag(held.source, drag_phase_t::end, position, event.modifiers, _clicks);
+      if (!dragged)
+        drag(held.source, drag_phase_t::end, position, event.modifiers, _clicks);
     }
     update_cursor();
-    if (held.empty() || !(target_at(position) == held))
+    if (dragged || held.empty() || !(target_at(position) == held))
       return;
     const auto *item = find(held);
     if (held.source)
@@ -779,6 +992,8 @@ public:
     _focused = nullptr;
     _focus_request = nullptr;
     _held = {};
+    _drag.reset();
+    _drop_target = nullptr;
     for (auto *slot : leaving)
       unmount(*slot, {});
     reap();
@@ -1929,6 +2144,26 @@ private:
   int _clicks = 1;
   std::uint64_t _bounds_frame = 0;
 
+  // A drag begun by ui::start_drag (G70), and what it is over. `handed_off` once the window system
+  // carries it; `refused_off` when it could not, so the edge is not offered it again and again.
+  struct drag_session_t
+  {
+    const pressable_t *source = nullptr;
+    std::shared_ptr<const drag_data_t> data;
+    drop_action_t allowed = drop_action_t::none;
+    bool handed_off = false;
+    bool refused_off = false;
+  };
+  std::optional<drag_session_t> _drag;
+  // The press under way became a drag: its release is no press, and its end came from the drag.
+  bool _dragged = false;
+  const pressable_t *_drop_target = nullptr;
+  std::shared_ptr<const drag_data_t> _drop_data;
+  drop_action_t _drop_allowed = drop_action_t::none;
+  modifier_t _drop_modifiers = modifier_t::none;
+  bool _drop_from_here = false;
+  drop_action_t _reported_answer = drop_action_t::none;
+
   // This frame's popups, where they are drawn, in drawing order. `backdrop` is the box a dismissing
   // popup's whole-window hit-test entry points at.
   struct popup_t
@@ -2090,11 +2325,17 @@ std::unique_ptr<renderer_t> choose_renderer(window_t &window, const run_config_t
 
 vio::task_t<void> pointer_loop(window_t &window, runtime_t &runtime)
 {
-  auto events = window.subscribe<pointer_move_event_t, pointer_button_event_t, pointer_enter_event_t, scroll_event_t>();
+  // Drops in the same queue as the pointer: a drag the window system ends is reported before the
+  // release it swallowed, and the order matters.
+  auto events = window.subscribe<pointer_move_event_t, pointer_button_event_t, pointer_enter_event_t, scroll_event_t, vui::drop_event_t, drag_end_event_t>();
   while (auto event = co_await events)
   {
     if (auto *move = std::get_if<pointer_move_event_t>(&*event))
       runtime.pointer_moved(move->position, move->modifiers);
+    else if (auto *drop = std::get_if<vui::drop_event_t>(&*event))
+      runtime.window_drop(*drop);
+    else if (auto *ended = std::get_if<drag_end_event_t>(&*event))
+      runtime.window_drag_ended(*ended);
     else if (auto *scroll = std::get_if<scroll_event_t>(&*event))
       runtime.wheel(*scroll);
     else if (auto *button = std::get_if<pointer_button_event_t>(&*event))
@@ -2171,6 +2412,11 @@ void invalidate_component(runtime_t &runtime, void *component, node_t (*view)(co
 void request_focus(runtime_t &runtime, const pressable_t *source) noexcept
 {
   runtime.request_focus(source);
+}
+
+bool start_drag(runtime_t &runtime, std::vector<std::string> paths, drop_action_t allowed)
+{
+  return runtime.start_drag(std::move(paths), allowed);
 }
 
 bool scope_cancelled(const scope_t &scope) noexcept

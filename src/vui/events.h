@@ -23,8 +23,10 @@ Copyright (c) 2026 Jørgen Lind
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace vui
 {
@@ -162,8 +164,73 @@ struct expose_event_t
 {
 };
 
+// ---- drag and drop (G70)
+
+// What a drop does with what was dragged. The values are Windows' DROPEFFECT bits, which is what
+// they become there; a set of them is what a drag allows.
+enum class drop_action_t : std::uint8_t
+{
+  none = 0,
+  copy = 1,
+  move = 2,
+  link = 4
+};
+
+constexpr drop_action_t operator|(drop_action_t a, drop_action_t b) noexcept
+{
+  return static_cast<drop_action_t>(static_cast<std::uint8_t>(a) | static_cast<std::uint8_t>(b));
+}
+
+constexpr drop_action_t operator&(drop_action_t a, drop_action_t b) noexcept
+{
+  return static_cast<drop_action_t>(static_cast<std::uint8_t>(a) & static_cast<std::uint8_t>(b));
+}
+
+constexpr bool has(drop_action_t set, drop_action_t action) noexcept
+{
+  return (set & action) != drop_action_t::none;
+}
+
+// What is being dragged: files and folders by path, UTF-8, and text.
+struct drag_data_t
+{
+  std::vector<std::string> paths;
+  std::string text;
+};
+
+enum class drop_phase_t : std::uint8_t
+{
+  enter,
+  over,
+  leave,
+  drop
+};
+
+// Something dragged over the window by the window system: from another program, or from this one
+// once its drag left the window it started in. Answer with window_t::accept_drop(); the answer
+// given by the time of the next event, or the drop, is what the dragging program is told. `data`
+// is shared by every event of one drag; a window system that reveals it only on the drop gives it
+// then, and none before.
+struct drop_event_t
+{
+  drop_phase_t phase = drop_phase_t::enter;
+  point_t position;
+  modifier_t modifiers = modifier_t::none;
+  // What the dragging program allows.
+  drop_action_t allowed = drop_action_t::none;
+  std::shared_ptr<const drag_data_t> data;
+};
+
+// A drag this window started with window_t::start_drag() is over, and what the target did with it:
+// `none` when it was refused or cancelled.
+struct drag_end_event_t
+{
+  drop_action_t action = drop_action_t::none;
+};
+
 // Everything a window reports, and what window_t::subscribe<Ts...>() selects from.
-using window_event_t = std::variant<key_event_t, text_event_t, pointer_move_event_t, pointer_button_event_t, scroll_event_t, pointer_enter_event_t, focus_event_t, resize_event_t, close_request_t, expose_event_t>;
+using window_event_t = std::variant<key_event_t, text_event_t, pointer_move_event_t, pointer_button_event_t, scroll_event_t, pointer_enter_event_t, focus_event_t, resize_event_t, close_request_t, expose_event_t,
+                                    drop_event_t, drag_end_event_t>;
 
 struct frame_t
 {

@@ -40,7 +40,7 @@ set(VUI_DEFINITIONS)
 
 if(WIN32)
     list(APPEND VUI_SOURCES src/backend_win32.cpp src/context_win32.cpp)
-    list(APPEND VUI_LIBRARIES user32 gdi32 dwmapi)
+    list(APPEND VUI_LIBRARIES user32 gdi32 dwmapi ole32 shell32 uuid)
 elseif(APPLE)
     enable_language(OBJCXX)
     list(APPEND VUI_SOURCES src/backend_cocoa.mm)

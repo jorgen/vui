@@ -270,6 +270,14 @@ public:
   {
   }
   [[nodiscard]] virtual native_window_t native() const = 0;
+  // Hand a drag to the window system, while the left button is held (G70). False where this
+  // backend cannot; true means a drag_end_event_t will follow.
+  virtual bool start_drag(std::vector<std::string> paths, drop_action_t allowed)
+  {
+    (void)paths;
+    (void)allowed;
+    return false;
+  }
 };
 
 class display_backend_t
@@ -355,6 +363,8 @@ public:
   extent_t framebuffer;
   float scale = 1.0f;
   cursor_t cursor = cursor_t::arrow;
+  // The answer to a drag over the window, which the backend tells the dragging program (G70).
+  drop_action_t drop_answer = drop_action_t::none;
   bool visible = false;
   bool damaged = true;
   bool frame_tick = false;

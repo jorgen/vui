@@ -695,6 +695,17 @@ cursor_t window_t::cursor() const noexcept
   return *this ? _impl->cursor : cursor_t::arrow;
 }
 
+bool window_t::start_drag(std::vector<std::string> paths, drop_action_t allowed)
+{
+  return *this && _impl->backend->start_drag(std::move(paths), allowed);
+}
+
+void window_t::accept_drop(drop_action_t action) noexcept
+{
+  if (_impl)
+    _impl->drop_answer = action;
+}
+
 void window_t::request_frame()
 {
   if (*this)

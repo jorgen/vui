@@ -46,12 +46,18 @@ Copyright (c) 2026 Jørgen Lind
 #include <windowsx.h>
 
 #include <dwmapi.h>
+#include <ole2.h>
+#include <shellapi.h>
+#include <shlobj.h>
 
 namespace vui::detail
 {
 namespace
 {
 constexpr UINT wake_message = WM_APP + 1;
+// Posted by start_drag, so the drag's modal loop runs from the message pump, as a size loop does,
+// and never inside a behaviour (G70).
+constexpr UINT drag_message = WM_APP + 2;
 constexpr UINT_PTR modal_timer = 1;
 constexpr ULONG_PTR forwarder_exit_key = 0x7669'6f65'7869'74ull;
 constexpr wchar_t window_class[] = L"vio_window";
@@ -200,10 +206,15 @@ public:
       CloseHandle(_finished);
     if (helper)
       DestroyWindow(helper);
+    if (ole)
+      OleUninitialize();
   }
 
   int start()
   {
+    // Drag and drop needs OLE in a single-threaded apartment; a thread already in the
+    // multithreaded one gets no drag and drop rather than no windows.
+    ole = SUCCEEDED(OleInitialize(nullptr));
     _port = reinterpret_cast<HANDLE>(vio::loop_native_handle(loop));
     if (!_port || _port == INVALID_HANDLE_VALUE)
       return vio::errc::not_supported;
@@ -271,6 +282,7 @@ public:
 
   vio::event_loop_t &loop;
   HWND helper = nullptr;
+  bool ole = false;
   int modal = 0;
   std::size_t displays = 0;
 
@@ -376,6 +388,10 @@ public:
   void set_cursor(cursor_t cursor) override;
   void frame_wanted() override;
   [[nodiscard]] native_window_t native() const override;
+  bool start_drag(std::vector<std::string> paths, drop_action_t allowed) override;
+
+  // What the window's drop target hears (G70).
+  DWORD drop(drop_phase_t phase, IDataObject *data, DWORD keys, POINTL at, DWORD allowed);
 
   HWND handle = nullptr;
 
@@ -386,6 +402,7 @@ private:
   void report_size();
   void turn_until_drawn();
   void button(button_t which, bool pressed, LPARAM lparam);
+  void run_drag();
 
   win32_display_t &_display;
   window_impl_t &_window;
@@ -401,6 +418,14 @@ private:
   cursor_t _cursor = cursor_t::arrow;
   WCHAR _high_surrogate = 0;
   int _buttons = 0;
+  // The drop target registered for the window, and what is being dragged over it.
+  IDropTarget *_drop_target = nullptr;
+  IDropTargetHelper *_drop_helper = nullptr;
+  std::shared_ptr<const drag_data_t> _dragged_in;
+  // A drag asked for and not yet begun.
+  std::vector<std::string> _drag_paths;
+  drop_action_t _drag_allowed = drop_action_t::none;
+  bool _drag_pending = false;
   bool _tracking = false;
   bool _fullscreen = false;
   bool _resizable = true;
@@ -541,6 +566,248 @@ public:
   std::shared_ptr<win32_thread_t> thread;
 };
 
+// ---- drag and drop (G70)
+
+// The window's IDropTarget: OLE calls it while something is dragged over the window, from another
+// program or from this one, and it passes each call on to the window.
+class drop_target_t final : public IDropTarget
+{
+public:
+  explicit drop_target_t(win32_window_t &window) noexcept
+    : window(&window)
+  {
+  }
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **out) override
+  {
+    if (riid == IID_IUnknown || riid == IID_IDropTarget)
+    {
+      *out = static_cast<IDropTarget *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *out = nullptr;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override
+  {
+    return ++_references;
+  }
+  ULONG STDMETHODCALLTYPE Release() override
+  {
+    const ULONG left = --_references;
+    if (left == 0)
+      delete this;
+    return left;
+  }
+
+  HRESULT STDMETHODCALLTYPE DragEnter(IDataObject *data, DWORD keys, POINTL at, DWORD *effect) override
+  {
+    *effect = window ? window->drop(drop_phase_t::enter, data, keys, at, *effect) : DROPEFFECT_NONE;
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE DragOver(DWORD keys, POINTL at, DWORD *effect) override
+  {
+    *effect = window ? window->drop(drop_phase_t::over, nullptr, keys, at, *effect) : DROPEFFECT_NONE;
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE DragLeave() override
+  {
+    if (window)
+      window->drop(drop_phase_t::leave, nullptr, 0, {}, DROPEFFECT_NONE);
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE Drop(IDataObject *data, DWORD keys, POINTL at, DWORD *effect) override
+  {
+    *effect = window ? window->drop(drop_phase_t::drop, data, keys, at, *effect) : DROPEFFECT_NONE;
+    return S_OK;
+  }
+
+  // Cleared when the window goes, before the registration is revoked: OLE may hold this longer.
+  win32_window_t *window;
+
+private:
+  std::atomic<ULONG> _references{1};
+};
+
+// Paths and text, as far as the data object has them.
+std::shared_ptr<const drag_data_t> read_drag_data(IDataObject *data)
+{
+  auto out = std::make_shared<drag_data_t>();
+  FORMATETC files{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  STGMEDIUM medium{};
+  if (SUCCEEDED(data->GetData(&files, &medium)))
+  {
+    if (auto drop = static_cast<HDROP>(GlobalLock(medium.hGlobal)))
+    {
+      const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+      for (UINT i = 0; i < count; ++i)
+      {
+        std::wstring name(DragQueryFileW(drop, i, nullptr, 0), L'\0');
+        DragQueryFileW(drop, i, name.data(), UINT(name.size() + 1));
+        out->paths.push_back(narrow(name.c_str(), int(name.size())));
+      }
+      GlobalUnlock(medium.hGlobal);
+    }
+    ReleaseStgMedium(&medium);
+  }
+  FORMATETC text{CF_UNICODETEXT, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  if (SUCCEEDED(data->GetData(&text, &medium)))
+  {
+    if (const auto *wide = static_cast<const wchar_t *>(GlobalLock(medium.hGlobal)))
+    {
+      out->text = narrow(wide, int(wcslen(wide)));
+      GlobalUnlock(medium.hGlobal);
+    }
+    ReleaseStgMedium(&medium);
+  }
+  return out;
+}
+
+// One of the actions allowed, from the answer: the answer itself when it is one.
+DWORD one_effect(DWORD effects) noexcept
+{
+  if (effects & DROPEFFECT_MOVE)
+    return DROPEFFECT_MOVE;
+  if (effects & DROPEFFECT_COPY)
+    return DROPEFFECT_COPY;
+  if (effects & DROPEFFECT_LINK)
+    return DROPEFFECT_LINK;
+  return DROPEFFECT_NONE;
+}
+
+// A shell data object for the paths: what Explorer itself hands out, with CF_HDROP for programs
+// that read only that, and the shell's own list of items for those that read more.
+IDataObject *make_data_object(const std::vector<std::string> &paths)
+{
+  std::vector<PIDLIST_ABSOLUTE> items;
+  const auto release = [&]
+  {
+    for (auto *item : items)
+      ILFree(item);
+  };
+  for (const auto &path : paths)
+  {
+    PIDLIST_ABSOLUTE item = nullptr;
+    if (FAILED(SHParseDisplayName(widen(path).c_str(), nullptr, &item, 0, nullptr)) || !item)
+    {
+      release();
+      return nullptr;
+    }
+    items.push_back(item);
+  }
+  if (items.empty())
+    return nullptr;
+  // Under one folder, as a selection always is: children of it. Otherwise from the desktop down.
+  PIDLIST_ABSOLUTE parent = ILClone(items.front());
+  ILRemoveLastID(parent);
+  bool together = true;
+  for (auto *item : items)
+  {
+    PIDLIST_ABSOLUTE up = ILClone(item);
+    ILRemoveLastID(up);
+    together = together && ILIsEqual(up, parent);
+    ILFree(up);
+  }
+  IDataObject *object = nullptr;
+  std::vector<PCUITEMID_CHILD> children;
+  for (auto *item : items)
+    children.push_back(together ? ILFindLastID(item) : reinterpret_cast<PCUITEMID_CHILD>(item));
+  SHCreateDataObject(together ? parent : nullptr, UINT(children.size()), children.data(), nullptr, IID_PPV_ARGS(&object));
+  ILFree(parent);
+  release();
+  return object;
+}
+
+DWORD win32_window_t::drop(drop_phase_t phase, IDataObject *data, DWORD keys, POINTL at, DWORD allowed)
+{
+  POINT client{at.x, at.y};
+  POINT screen = client;
+  ScreenToClient(handle, &client);
+  modifier_t modifiers = modifier_t::none;
+  if (keys & MK_SHIFT)
+    modifiers = modifiers | modifier_t::shift;
+  if (keys & MK_CONTROL)
+    modifiers = modifiers | modifier_t::control;
+  if (keys & MK_ALT)
+    modifiers = modifiers | modifier_t::alt;
+  if (phase == drop_phase_t::enter || (phase == drop_phase_t::drop && data))
+    _dragged_in = read_drag_data(data);
+  // The answer the program has given so far, within what the dragging side allows.
+  const DWORD effect = phase == drop_phase_t::leave ? DROPEFFECT_NONE : one_effect(DWORD(_window.drop_answer) & allowed);
+  // The shell draws the dragged items' image over windows that tell it where the drag is.
+  if (!_drop_helper && phase == drop_phase_t::enter)
+    CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&_drop_helper));
+  if (_drop_helper)
+  {
+    switch (phase)
+    {
+    case drop_phase_t::enter:
+      _drop_helper->DragEnter(handle, data, &screen, effect);
+      break;
+    case drop_phase_t::over:
+      _drop_helper->DragOver(&screen, effect);
+      break;
+    case drop_phase_t::leave:
+      _drop_helper->DragLeave();
+      break;
+    case drop_phase_t::drop:
+      _drop_helper->Drop(data, &screen, effect);
+      break;
+    }
+  }
+  _window.on_input(drop_event_t{phase, {double(client.x), double(client.y)}, modifiers, drop_action_t(allowed & 7), _dragged_in});
+  if (phase == drop_phase_t::leave || phase == drop_phase_t::drop)
+  {
+    _dragged_in.reset();
+    _window.drop_answer = drop_action_t::none;
+  }
+  return effect;
+}
+
+bool win32_window_t::start_drag(std::vector<std::string> paths, drop_action_t allowed)
+{
+  if (!_display.thread->ole || paths.empty() || _drag_pending)
+    return false;
+  _drag_paths = std::move(paths);
+  _drag_allowed = allowed;
+  _drag_pending = true;
+  PostMessageW(handle, drag_message, 0, 0);
+  return true;
+}
+
+// The drag itself: OLE's modal loop, inside which the event loop is turned by the modal timer, so
+// the program still draws and still answers drops on its own window. OLE took the button's release;
+// the window is told the button is up once the drag has said how it ended.
+void win32_window_t::run_drag()
+{
+  _drag_pending = false;
+  drop_action_t result = drop_action_t::none;
+  if (IDataObject *data = make_data_object(_drag_paths))
+  {
+    auto &thread = *_display.thread;
+    DWORD effect = DROPEFFECT_NONE;
+    thread.enter_modal();
+    const HRESULT done = SHDoDragDrop(handle, data, nullptr, DWORD(_drag_allowed), &effect);
+    thread.leave_modal();
+    data->Release();
+    if (done == DRAGDROP_S_DROP)
+      result = drop_action_t(effect & 7);
+  }
+  _drag_paths.clear();
+  _window.on_input(drag_end_event_t{result});
+  if (_buttons > 0)
+  {
+    _buttons = 0;
+    if (GetCapture() == handle)
+      ReleaseCapture();
+    POINT at{};
+    GetCursorPos(&at);
+    ScreenToClient(handle, &at);
+    _window.on_input(pointer_button_event_t{button_t::left, false, {double(at.x), double(at.y)}, current_modifiers()});
+  }
+}
+
 win32_window_t::win32_window_t(win32_display_t &display, window_impl_t &window)
   : _display(display)
   , _window(window)
@@ -550,8 +817,16 @@ win32_window_t::win32_window_t(win32_display_t &display, window_impl_t &window)
 
 win32_window_t::~win32_window_t()
 {
+  if (_drop_helper)
+    _drop_helper->Release();
   if (!handle)
     return;
+  if (_drop_target)
+  {
+    static_cast<drop_target_t *>(_drop_target)->window = nullptr;
+    RevokeDragDrop(handle);
+    _drop_target->Release();
+  }
   SetWindowLongPtrW(handle, GWLP_USERDATA, 0);
   if (GetCapture() == handle)
     ReleaseCapture();
@@ -597,6 +872,15 @@ int win32_window_t::create(const window_config_t &config)
     return vio::errc::out_of_memory;
   _frame_theme = config.frame_theme;
   apply_frame_theme();
+  if (_display.thread->ole)
+  {
+    _drop_target = new drop_target_t(*this);
+    if (FAILED(RegisterDragDrop(handle, _drop_target)))
+    {
+      _drop_target->Release();
+      _drop_target = nullptr;
+    }
+  }
   const float factor = scale();
   if (factor != 1.0f)
   {
@@ -840,6 +1124,9 @@ LRESULT win32_window_t::procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM
     _window.on_input(event);
     return 0;
   }
+  case drag_message:
+    run_drag();
+    return 0;
   case WM_SETCURSOR:
     if (LOWORD(lparam) == HTCLIENT)
     {

@@ -231,6 +231,12 @@ public:
   void set_cursor(cursor_t cursor);
   // The shape last set, the arrow until one is.
   [[nodiscard]] cursor_t cursor() const noexcept;
+  // Drag and drop with other programs (G70). start_drag hands files to the window system to be
+  // dragged, while the left button is held; a drag_end_event_t says how it ended. False where the
+  // window system cannot, which is everywhere but Windows for now. accept_drop answers what
+  // drop_event_t offered: what a drop here would do, `none` to refuse it.
+  bool start_drag(std::vector<std::string> paths, drop_action_t allowed);
+  void accept_drop(drop_action_t action) noexcept;
   void request_frame();
 
   [[nodiscard]] extent_t size() const noexcept
