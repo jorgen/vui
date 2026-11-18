@@ -1555,6 +1555,8 @@ struct explorer_t
   // Everything the menu acts on: the entry alone, or the whole selection it is part of.
   std::vector<shell::entry_t> menu_entries;
   std::vector<std::pair<action_t, std::size_t>> menu_actions;
+  // What each submenu's rows do; a submenu row's own entry in menu_actions holds its index here.
+  std::vector<std::vector<std::pair<action_t, std::size_t>>> menu_sub_actions;
 
   std::vector<shell::place_t> places;
   std::vector<shell::place_t> drives;
@@ -2288,6 +2290,7 @@ struct explorer_t
   void build_menu(ui::scope_t &)
   {
     menu_actions.clear();
+    menu_sub_actions.clear();
     std::vector<ui::menu_item_t> items;
     const auto add = [&](ui::menu_item_t item, action_t action, std::size_t extra = 0)
     {
@@ -2314,21 +2317,31 @@ struct explorer_t
     };
     if (menu_place)
     {
+      // Changing Places takes a step into a submenu (G68): removing one, or all of them, is not
+      // something to do by a slip of the pointer. Adding one is dragging a folder there.
       const auto i = *menu_place;
       const bool is_place = i < places.size();
       add({.label = "Open"}, action_t::open);
       rule();
+      add({.label = "Copy path"}, action_t::copy_path);
+      rule();
+      ui::menu_item_t manage{.label = "Manage Places", .kind = ui::menu_item_t::kind_t::submenu};
+      std::vector<std::pair<action_t, std::size_t>> manage_actions;
+      const auto sub_add = [&](ui::menu_item_t item, action_t action)
+      {
+        manage.items.push_back(std::move(item));
+        manage_actions.emplace_back(action, 0);
+      };
       if (is_place)
       {
-        add({.label = "Move up", .enabled = i > 0}, action_t::place_up);
-        add({.label = "Move down", .enabled = i + 1 < places.size()}, action_t::place_down);
-        add({.label = "Remove from Places"}, action_t::remove_place);
+        sub_add({.label = "Move up", .enabled = i > 0}, action_t::place_up);
+        sub_add({.label = "Move down", .enabled = i + 1 < places.size()}, action_t::place_down);
+        sub_add({.kind = ui::menu_item_t::kind_t::separator}, action_t::refresh);
+        sub_add({.label = "Remove from Places"}, action_t::remove_place);
       }
-      else
-        add({.label = "Add to Places", .enabled = !is_in_places(drives[i - places.size()].path)}, action_t::add_place);
-      rule();
-      add({.label = "Copy path"}, action_t::copy_path);
-      add({.label = "Reset Places to the standard folders"}, action_t::reset_places);
+      sub_add({.label = "Reset to the standard folders"}, action_t::reset_places);
+      add(std::move(manage), action_t::refresh, menu_sub_actions.size());
+      menu_sub_actions.push_back(std::move(manage_actions));
     }
     else if (menu_entries.size() > 1)
     {
@@ -2375,8 +2388,6 @@ struct explorer_t
       add({.label = "Open", .detail = folder ? "Enter" : by}, action_t::open);
       if (!folder && shell::can_elevate() && shell::is_program(menu_entry->name))
         add({.label = "Run as administrator"}, action_t::run_admin);
-      if (folder)
-        add({.label = "Add to Places", .enabled = !is_in_places(shell::join(path, menu_entry->name))}, action_t::add_place);
       if (!folder && !ext.empty())
       {
         rule();
@@ -2457,7 +2468,6 @@ struct explorer_t
       add({.label = "Copy path with backslashes"}, action_t::copy_path_native);
 #endif
       add({.label = "Edit path", .detail = "double-click"}, action_t::edit_path);
-      add({.label = "Add to Places", .enabled = !is_in_places(path)}, action_t::add_place);
       rule();
       terminal_items();
       add({.label = std::string("Show in ") + shell::file_manager_name()}, action_t::reveal);
@@ -2489,11 +2499,17 @@ struct explorer_t
   }
   std::vector<ui::menu_item_t> menu_items;
 
-  void act(ui::scope_t &scope, std::size_t index)
+  void act(ui::scope_t &scope, const ui::menu_choice_t &choice)
   {
-    if (index >= menu_actions.size())
+    if (choice.index >= menu_actions.size())
       return;
-    const auto [action, extra] = menu_actions[index];
+    auto [action, extra] = menu_actions[choice.index];
+    if (choice.sub != ui::menu_choice_t::top)
+    {
+      if (extra >= menu_sub_actions.size() || choice.sub >= menu_sub_actions[extra].size())
+        return;
+      std::tie(action, extra) = menu_sub_actions[extra][choice.sub];
+    }
     const auto entry = menu_entry;
     const auto entries = menu_entries;
     const auto place = menu_place;
@@ -3052,7 +3068,7 @@ struct explorer_t
         break;
       }
       case 8:
-        act(scope, std::get<8>(*event).index);
+        act(scope, std::get<8>(*event));
         break;
       case 9:
         menu_at.reset();

@@ -718,7 +718,8 @@ TEST_CASE("ui context menu: opens where placed, chooses by pointer and keyboard,
           std::vector<ui::rect_t> rows;
           for (const auto &s : frame.items)
           {
-            if (s.source && s.source != &root.keys && s.source != &root.menu.dismiss)
+            // The panel itself reports where it is, for placing a submenu; it is the tall one.
+            if (s.source && s.source != &root.keys && s.source != &root.menu.dismiss && s.rect.height < 40)
               rows.push_back(s.rect);
           }
           REQUIRE(rows.size() == 2);
@@ -741,5 +742,109 @@ TEST_CASE("ui context menu: opens where placed, chooses by pointer and keyboard,
           co_await settle(loop);
           CHECK(root.dismissed == 1);
           CHECK_FALSE(root.open);
+        });
+}
+
+TEST_CASE("ui context menu: a submenu opens beside its row, by pointer and by keyboard")
+{
+  struct root_t
+  {
+    ui::context_menu_t menu;
+    ui::pressable_t keys{ui::focusable};
+    std::vector<std::pair<std::size_t, std::size_t>> chosen;
+
+    ui::node_t view() const
+    {
+      ui::box_t page{.size = {400, 300}, .color = {0, 0, 0, 0}, .events = keys, .align_x = ui::align_t::start, .align_y = ui::align_t::start};
+      page.children.push_back(ui::at_t{.x = 0,
+                                       .y = 20,
+                                       .children = {ui::mount(menu, {.items = {{.label = "Open"},
+                                                                               {.label = "Manage",
+                                                                                .kind = ui::menu_item_t::kind_t::submenu,
+                                                                                .items = {{.label = "Header", .kind = ui::menu_item_t::kind_t::header},
+                                                                                          {.label = "Remove"},
+                                                                                          {.label = "Reset"}}},
+                                                                               {.label = "Copy"}}})
+                                                      .on_top(menu.dismiss)}});
+      return page;
+    }
+    ui::behaviour_t behave(ui::scope_t &scope)
+    {
+      auto choices = ui::subscribe<ui::menu_choice_t>(menu.chosen);
+      auto typed = ui::subscribe<vui::key_event_t>(keys);
+      auto events = ui::merge(scope, choices, typed);
+      while (auto event = co_await events)
+      {
+        if (event->index() == 0)
+          chosen.emplace_back(std::get<0>(*event).index, std::get<0>(*event).sub);
+        else
+          menu.key(std::get<1>(*event), scope);
+      }
+    }
+  } root;
+  frame_t frame;
+  const auto rows = [&]
+  {
+    std::vector<ui::rect_t> found;
+    for (const auto &s : frame.items)
+    {
+      if (s.source && s.source != &root.keys && s.source != &root.menu.dismiss && s.rect.height < 40)
+        found.push_back(s.rect);
+    }
+    std::sort(found.begin(), found.end(), [](const ui::rect_t &a, const ui::rect_t &b) { return a.x != b.x ? a.x < b.x : a.y < b.y; });
+    return found;
+  };
+  drive(root, frame,
+        [&](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          auto shown = rows();
+          REQUIRE(shown.size() == 3);
+          const auto manage = shown[1];
+          // Pressing the submenu's row chooses nothing.
+          click(window, {manage.x + 10.0, manage.y + 5.0});
+          co_await settle(loop);
+          CHECK(root.chosen.empty());
+          // Resting on it opens the submenu beside it, its first row level with it.
+          window.impl()->on_input(vui::pointer_move_event_t{{manage.x + 20.0, manage.y + 6.0}});
+          co_await settle(loop);
+          shown = rows();
+          REQUIRE(shown.size() == 5);
+          // The menu stays where it was.
+          CHECK(shown[1].x == manage.x);
+          CHECK(shown[1].y == manage.y);
+          const auto remove = shown[3];
+          CHECK(remove.x >= manage.x + manage.width - 4);
+          CHECK(remove.y >= manage.y);
+          CHECK(remove.y < manage.y + 2 * manage.height + 8);
+          click(window, {shown[4].x + 10.0, shown[4].y + 5.0});
+          co_await settle(loop);
+          REQUIRE(root.chosen.size() == 1);
+          CHECK(root.chosen[0] == std::pair<std::size_t, std::size_t>{1, 2});
+          // Resting on another row closes it.
+          window.impl()->on_input(vui::pointer_move_event_t{{shown[0].x + 20.0, shown[0].y + 6.0}});
+          co_await settle(loop);
+          CHECK(rows().size() == 3);
+          // Keys: Down twice reaches Manage, Right opens it on its first usable row, Down moves on,
+          // Enter chooses; Left goes back out.
+          window.impl()->on_input(vui::pointer_move_event_t{{390, 290}});
+          key(window, vui::key_t::tab);
+          key(window, vui::key_t::down);
+          key(window, vui::key_t::down);
+          key(window, vui::key_t::right);
+          key(window, vui::key_t::enter);
+          co_await settle(loop);
+          REQUIRE(root.chosen.size() == 2);
+          CHECK(root.chosen[1] == std::pair<std::size_t, std::size_t>{1, 1});
+          key(window, vui::key_t::down);
+          key(window, vui::key_t::enter);
+          co_await settle(loop);
+          REQUIRE(root.chosen.size() == 3);
+          CHECK(root.chosen[2] == std::pair<std::size_t, std::size_t>{1, 2});
+          key(window, vui::key_t::left);
+          key(window, vui::key_t::down);
+          key(window, vui::key_t::enter);
+          co_await settle(loop);
+          REQUIRE(root.chosen.size() == 4);
+          CHECK(root.chosen[3] == std::pair<std::size_t, std::size_t>{2, ui::menu_choice_t::top});
         });
 }

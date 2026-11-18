@@ -1039,3 +1039,17 @@ Linux), with `start --cwd`, which opens the shell its configuration names; else 
 .bat, .cmd and .msi use the runas verb, which asks through UAC; a declined prompt is reported as
 such. An elevated process starts in System32 whatever directory it is given, so the folder always
 travels in the arguments. Windows only.
+
+## G68. Submenus, and Places changed only through one
+
+A `menu_item_t` of kind `submenu` carries rows of its own, opened beside it when the pointer rests
+on it, when it is pressed, or with Right; Left goes back out. A choice from it reports the
+submenu's row in `index` and its own row in `sub`, which is `menu_choice_t::top` for a row of the
+menu itself. One level deep: nothing here needs more, and a second level is where menus stop being
+usable. The submenu is a popup of its own, so keeping it inside the window moves only it, not the
+menu it came from. Where to put it is read from the frame that showed its row, which is the frame
+the pointer rested on it in.
+
+In the explorer, moving, removing and resetting Places sit in a "Manage Places" submenu: removing a
+place, or all of them, should take a deliberate step, and a context menu is where a slip of the
+pointer lands. "Add to Places" is gone from every menu; a folder is added by dragging it there.

@@ -330,19 +330,28 @@ struct menu_item_t
     separator,
     // A quiet title over a group: "Open with".
     header,
+    // A row that opens `items` beside it, when the pointer rests on it or Right is pressed: for
+    // what should take a deliberate step to reach (G68). One level deep.
+    submenu,
   };
   std::string label;
   // Shown at the right, quieter: a shortcut, or where the item leads.
   std::string detail;
   bool enabled = true;
   kind_t kind = kind_t::item;
+  // A submenu's rows; separators and headers work in them as they do above.
+  std::vector<menu_item_t> items;
   friend bool operator==(const menu_item_t &, const menu_item_t &) = default;
 };
 
 struct menu_choice_t
 {
   const context_menu_t *source = nullptr;
+  // The row chosen; for a row in a submenu, the submenu's row.
   std::size_t index = 0;
+  // The row within that submenu, or `top` for a row of the menu itself.
+  std::size_t sub = top;
+  static constexpr std::size_t top = std::size_t(-1);
 };
 
 // A menu that opens where its parent places it and over everything else: a context menu (G53). The
@@ -354,7 +363,8 @@ struct menu_choice_t
 //                              .children = {ui::mount(menu, {.items = items}).on_top(menu.dismiss)}});
 //
 // It does not take focus from what opened it, so the parent hands it the keys it receives while it
-// is open: key() moves through the items with Up and Down and chooses with Enter.
+// is open: key() moves through the items with Up and Down and chooses with Enter; Right opens a
+// submenu and Left goes back out of it.
 class context_menu_t
 {
 public:
@@ -369,15 +379,37 @@ public:
 
   [[nodiscard]] node_t view() const;
   behaviour_t behave(scope_t &scope);
-  // Whether it used the key: Up, Down, Home, End and Enter.
+  // Whether it used the key: Up, Down, Home, End, Enter, and Right and Left for a submenu.
   bool key(const key_event_t &event, scope_t &scope);
 
   static constexpr std::size_t max_items = 64;
 
 private:
   [[nodiscard]] bool choosable(std::size_t index) const noexcept;
+  [[nodiscard]] bool reachable(std::size_t index) const noexcept;
+  [[nodiscard]] bool sub_choosable(std::size_t index) const noexcept;
+  void open_submenu(int index, bool from_keys, scope_t &scope);
+  // The submenu is a popup of its own, so it is kept inside the window without moving the menu.
+  struct submenu_t
+  {
+    struct props_t
+    {
+      const context_menu_t *owner = nullptr;
+      int open = -1;
+      int highlight = -1;
+      friend bool operator==(const props_t &, const props_t &) = default;
+    };
+    props_t props;
+    [[nodiscard]] node_t view() const;
+  };
+  submenu_t _submenu;
   std::array<pressable_t, max_items> _rows;
+  std::array<pressable_t, max_items> _sub_rows;
+  pressable_t _panel;
   int _highlight = -1;
+  // The submenu showing, by its row, and the row lit in it by the keyboard.
+  int _open = -1;
+  int _sub_highlight = -1;
 };
 
 struct line_edit_event_t

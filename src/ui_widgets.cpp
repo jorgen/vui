@@ -340,14 +340,51 @@ bool context_menu_t::choosable(std::size_t index) const noexcept
   return index < props.items.size() && index < max_items && props.items[index].kind == menu_item_t::kind_t::item && props.items[index].enabled;
 }
 
-node_t context_menu_t::view() const
+// What Up and Down stop on: a row that is chosen, or one that opens a submenu.
+bool context_menu_t::reachable(std::size_t index) const noexcept
+{
+  return choosable(index) || (index < props.items.size() && index < max_items && props.items[index].kind == menu_item_t::kind_t::submenu && props.items[index].enabled);
+}
+
+bool context_menu_t::sub_choosable(std::size_t index) const noexcept
+{
+  if (_open < 0 || std::size_t(_open) >= props.items.size())
+    return false;
+  const auto &items = props.items[std::size_t(_open)].items;
+  return index < items.size() && index < max_items && items[index].kind == menu_item_t::kind_t::item && items[index].enabled;
+}
+
+void context_menu_t::open_submenu(int index, bool from_keys, scope_t &scope)
+{
+  if (!from_keys && _open == index)
+    return;
+  _open = index;
+  _sub_highlight = -1;
+  if (from_keys)
+  {
+    for (std::size_t i = 0; i < max_items; ++i)
+    {
+      if (sub_choosable(i))
+      {
+        _sub_highlight = int(i);
+        break;
+      }
+    }
+  }
+  invalidate(scope, *this);
+}
+
+namespace
+{
+// One panel of a menu: its rows, each reporting to its own pressable where it can be used.
+column_t menu_rows(const std::vector<menu_item_t> &items, const std::array<pressable_t, context_menu_t::max_items> &rows, int highlight, int open)
 {
   const auto &t = theme();
   column_t list{.align = align_t::stretch};
-  const auto n = std::min(props.items.size(), max_items);
+  const auto n = std::min(items.size(), context_menu_t::max_items);
   for (std::size_t i = 0; i < n; ++i)
   {
-    const auto &item = props.items[i];
+    const auto &item = items[i];
     if (item.kind == menu_item_t::kind_t::separator)
     {
       list.children.push_back(box_t{.color = clear, .padding = {8, 4}, .align_x = align_t::stretch, .children = {box_t{.size = {0, 1}, .color = t.border}}});
@@ -358,40 +395,103 @@ node_t context_menu_t::view() const
       list.children.push_back(box_t{.color = clear, .padding = {12, 6, 12, 2}, .align_x = align_t::start, .children = {text_t{.text = item.label, .size = t.text_size - 2, .color = t.text_muted}}});
       continue;
     }
-    const bool lit = int(i) == _highlight && item.enabled;
-    const bool hovered = _rows[i].hovered() && item.enabled;
+    const bool submenu = item.kind == menu_item_t::kind_t::submenu;
+    const bool lit = int(i) == highlight && item.enabled;
+    const bool hovered = (rows[i].hovered() || (submenu && int(i) == open)) && item.enabled;
     const color_t ink = !item.enabled ? t.text_disabled : (lit ? white : t.text);
     row_t line{.align = align_t::center, .children = {text_t{.text = item.label, .size = t.text_size, .color = ink}, spacer_t{.grow = 1, .size = {24, 0}}}};
-    if (!item.detail.empty())
+    if (submenu)
+      line.children.push_back(text_t{.text = ">", .size = t.text_size - 1, .color = lit ? white : t.text_muted});
+    else if (!item.detail.empty())
       line.children.push_back(text_t{.text = item.detail, .size = t.text_size - 1, .color = lit ? white : t.text_muted});
     list.children.push_back(box_t{.color = lit ? t.accent : (hovered ? t.control_hovered : clear),
                                   .radius = 4,
-                                  .events = item.enabled ? event_ref_t(_rows[i]) : event_ref_t{},
+                                  .events = item.enabled ? event_ref_t(rows[i]) : event_ref_t{},
                                   .padding = {12, 5},
                                   .align_x = align_t::stretch,
                                   .children = {std::move(line)}});
   }
+  return list;
+}
+
+box_t menu_panel(column_t rows, event_ref_t events = {})
+{
+  const auto &t = theme();
   return box_t{.size = {200, 0},
                .color = t.menu,
                .radius = t.radius,
                .border_width = 1,
                .border_color = t.border,
                .shadow = {.x = 0, .y = 4, .blur = 12, .color = {0, 0, 0, 0.55f}},
+               .events = events,
                .padding = {4, 4},
                .align_x = align_t::stretch,
-               .children = {std::move(list)}};
+               .children = {std::move(rows)}};
+}
+} // namespace
+
+node_t context_menu_t::view() const
+{
+  auto panel = menu_panel(menu_rows(props.items, _rows, _sub_highlight >= 0 ? -1 : _highlight, _open), _panel);
+  if (_open < 0 || std::size_t(_open) >= props.items.size() || std::size_t(_open) >= max_items)
+    return panel;
+  // The submenu beside its row, its first row level with it. Where the row is comes from the frame
+  // that showed it, which is the one the pointer rested on it in.
+  const auto row = _rows[std::size_t(_open)].bounds();
+  const auto top = _panel.bounds();
+  const float y = row.height > 0 && top.height > 0 ? row.y - top.y - 4 : 0;
+  return row_t{.align = align_t::start, .children = {std::move(panel), at_t{.x = -2, .y = y, .children = {mount(_submenu, {this, _open, _sub_highlight}).on_top()}}}};
+}
+
+node_t context_menu_t::submenu_t::view() const
+{
+  const auto &owner = *props.owner;
+  return menu_panel(menu_rows(owner.props.items[std::size_t(props.open)].items, owner._sub_rows, props.highlight, -1));
 }
 
 behaviour_t context_menu_t::behave(scope_t &scope)
 {
   // Opened afresh: nothing is lit until a key asks.
   _highlight = -1;
+  _open = -1;
+  _sub_highlight = -1;
   auto presses = subscribe<press_event_t>(_rows);
-  while (auto press = co_await presses)
+  auto sub_presses = subscribe<press_event_t>(_sub_rows);
+  auto hovers = subscribe<hover_event_t>(_rows);
+  auto events = merge(scope, presses, sub_presses, hovers);
+  while (auto event = co_await events)
   {
-    const auto index = std::size_t(press->source - &_rows[0]);
-    if (choosable(index))
-      emit(chosen, menu_choice_t{this, index}, scope);
+    if (event->index() == 0)
+    {
+      const auto index = std::size_t(std::get<0>(*event).source - &_rows[0]);
+      if (choosable(index))
+        emit(chosen, menu_choice_t{this, index}, scope);
+      else if (reachable(index))
+        open_submenu(int(index), false, scope);
+    }
+    else if (event->index() == 1)
+    {
+      const auto index = std::size_t(std::get<1>(*event).source - &_sub_rows[0]);
+      if (sub_choosable(index))
+        emit(chosen, menu_choice_t{this, std::size_t(_open), index}, scope);
+    }
+    else
+    {
+      // Resting on a submenu's row opens it; on another row, closes it. Leaving a row, for the gap
+      // or for the submenu itself, changes nothing.
+      const auto &hover = std::get<2>(*event);
+      const auto index = std::size_t(hover.source - &_rows[0]);
+      if (!hover.inside)
+        continue;
+      if (choosable(index) && _open >= 0)
+      {
+        _open = -1;
+        _sub_highlight = -1;
+        invalidate(scope, *this);
+      }
+      else if (reachable(index) && !choosable(index))
+        open_submenu(int(index), false, scope);
+    }
   }
 }
 
@@ -399,41 +499,94 @@ bool context_menu_t::key(const key_event_t &event, scope_t &scope)
 {
   if (!event.pressed)
     return false;
-  const int n = int(std::min(props.items.size(), max_items));
-  const auto step = [&](int from, int by)
+  const auto step_over = [](int n, int from, int by, auto &&usable)
   {
     for (int i = from + by; i >= 0 && i < n; i += by)
     {
-      if (choosable(std::size_t(i)))
+      if (usable(std::size_t(i)))
         return i;
     }
     return from;
   };
+  // Inside an open submenu the keys move through it, and Left goes back to its row.
+  if (_open >= 0 && _sub_highlight >= 0)
+  {
+    const int n = int(std::min(props.items[std::size_t(_open)].items.size(), max_items));
+    const auto usable = [this](std::size_t i) { return sub_choosable(i); };
+    const int before = _sub_highlight;
+    switch (event.key)
+    {
+    case key_t::down:
+      _sub_highlight = step_over(n, _sub_highlight, 1, usable);
+      break;
+    case key_t::up:
+      _sub_highlight = step_over(n, _sub_highlight, -1, usable);
+      break;
+    case key_t::home:
+      _sub_highlight = step_over(n, -1, 1, usable);
+      break;
+    case key_t::end:
+      _sub_highlight = step_over(n, n, -1, usable);
+      break;
+    case key_t::left:
+      _highlight = _open;
+      _open = -1;
+      _sub_highlight = -1;
+      invalidate(scope, *this);
+      return true;
+    case key_t::enter:
+    case key_t::keypad_enter:
+      if (sub_choosable(std::size_t(_sub_highlight)))
+        emit(chosen, menu_choice_t{this, std::size_t(_open), std::size_t(_sub_highlight)}, scope);
+      return true;
+    default:
+      return false;
+    }
+    if (_sub_highlight != before)
+      invalidate(scope, *this);
+    return true;
+  }
+  const int n = int(std::min(props.items.size(), max_items));
+  const auto usable = [this](std::size_t i) { return reachable(i); };
   const int before = _highlight;
   switch (event.key)
   {
   case key_t::down:
-    _highlight = step(_highlight, 1);
+    _highlight = step_over(n, _highlight, 1, usable);
     break;
   case key_t::up:
-    _highlight = _highlight < 0 ? step(n, -1) : step(_highlight, -1);
+    _highlight = _highlight < 0 ? step_over(n, n, -1, usable) : step_over(n, _highlight, -1, usable);
     break;
   case key_t::home:
-    _highlight = step(-1, 1);
+    _highlight = step_over(n, -1, 1, usable);
     break;
   case key_t::end:
-    _highlight = step(n, -1);
+    _highlight = step_over(n, n, -1, usable);
     break;
+  case key_t::right:
+    if (_highlight >= 0 && reachable(std::size_t(_highlight)) && !choosable(std::size_t(_highlight)))
+    {
+      open_submenu(_highlight, true, scope);
+      return true;
+    }
+    return false;
   case key_t::enter:
   case key_t::keypad_enter:
     if (_highlight >= 0 && choosable(std::size_t(_highlight)))
       emit(chosen, menu_choice_t{this, std::size_t(_highlight)}, scope);
+    else if (_highlight >= 0 && reachable(std::size_t(_highlight)))
+      open_submenu(_highlight, true, scope);
     return true;
   default:
     return false;
   }
   if (_highlight != before)
+  {
+    // Moving off a submenu's row closes what the pointer opened there.
+    if (_open >= 0 && _open != _highlight)
+      _open = -1;
     invalidate(scope, *this);
+  }
   return true;
 }
 
