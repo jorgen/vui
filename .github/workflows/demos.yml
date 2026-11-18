@@ -1,0 +1,118 @@
+name: Demos
+
+# The task manager and the explorer, built for release on every push to master and kept as
+# downloadable artifacts. Separate from CI, so a red test does not hold back the downloads.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: demos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CMDEP_DIR: 3rdparty
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    name: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache 3rdparty dependencies
+        uses: actions/cache@v4
+        with:
+          path: 3rdparty
+          key: 3rdparty-${{ runner.os }}-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'cmake/cmdep.lock', 'CMakeLists.txt') }}
+          restore-keys: 3rdparty-${{ runner.os }}-
+
+      - name: Install NASM
+        run: |
+          choco install nasm -y --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # Release, with the C runtime linked in, so each executable runs on its own.
+      - name: Build
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          "%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath > "%RUNNER_TEMP%\vspath.txt"
+          set /p VSPATH=<"%RUNNER_TEMP%\vspath.txt"
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DVUI_BUILD_TESTS=OFF || exit /b 1
+          cmake --build build --target vui_demos_package || exit /b 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vui-demos-windows-x64
+          path: build/vui-demos/
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-15
+    name: macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install tools
+        run: brew install ninja
+
+      - name: Cache 3rdparty dependencies
+        uses: actions/cache@v4
+        with:
+          path: 3rdparty
+          key: 3rdparty-${{ runner.os }}-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'cmake/cmdep.lock', 'CMakeLists.txt') }}
+          restore-keys: 3rdparty-${{ runner.os }}-
+
+      - name: Build
+        run: |
+          cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DVUI_BUILD_TESTS=OFF
+          cmake --build build --target vui_demos_package
+
+      # A tarball inside the artifact: an artifact's own zip drops the executable bit.
+      - name: Pack
+        run: tar -czf vui-demos-macos-arm64.tar.gz -C build vui-demos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vui-demos-macos-arm64
+          path: vui-demos-macos-arm64.tar.gz
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-24.04
+    name: linux
+    container:
+      image: ghcr.io/jorgen/vio-ci:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache 3rdparty dependencies
+        uses: actions/cache@v4
+        with:
+          path: 3rdparty
+          key: 3rdparty-${{ runner.os }}-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'cmake/cmdep.lock', 'CMakeLists.txt') }}
+          restore-keys: 3rdparty-${{ runner.os }}-
+
+      - name: Build
+        run: |
+          cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DVUI_BUILD_TESTS=OFF \
+            -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+          cmake --build build --target vui_demos_package
+
+      - name: Pack
+        run: tar -czf vui-demos-linux-x64.tar.gz -C build vui-demos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vui-demos-linux-x64
+          path: vui-demos-linux-x64.tar.gz
+          if-no-files-found: error
