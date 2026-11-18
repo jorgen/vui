@@ -27,7 +27,7 @@ std::string utf8(const fs::path &p)
   return std::string(reinterpret_cast<const char *>(s.data()), s.size());
 }
 
-bool exists(const fs::path &p)
+bool present(const fs::path &p)
 {
   std::error_code error;
   return fs::exists(fs::symlink_status(p, error));
@@ -41,7 +41,7 @@ fs::path free_name(const fs::path &folder, const fs::path &name, bool directory)
   for (int n = 2;; ++n)
   {
     auto candidate = folder / native(stem + " (" + std::to_string(n) + ")" + ext);
-    if (!exists(candidate))
+    if (!present(candidate))
       return candidate;
   }
 }
@@ -84,7 +84,7 @@ std::expected<void, std::string> transfer(const std::vector<std::string> &items,
     if (directory && within(into, from))
       return std::unexpected("cannot put " + utf8(from.filename()) + " inside itself");
     auto to = into / from.filename();
-    if (exists(to))
+    if (present(to))
       to = free_name(into, from.filename(), directory);
     if (move)
     {
@@ -123,7 +123,7 @@ std::expected<void, std::string> rename_item(const std::string &path, const std:
   const auto to = from.parent_path() / native(name);
   std::error_code error;
   // Taken, unless it is the same file under another case on a file system that ignores case.
-  if (exists(to) && !fs::equivalent(from, to, error))
+  if (present(to) && !fs::equivalent(from, to, error))
     return std::unexpected("there is already something called \"" + name + "\" here");
   fs::rename(from, to, error);
   if (error)
