@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/jorgen/vui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jorgen/vui/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/jorgen/vui/releases/tag/latest"><img alt="Demos" src="https://github.com/jorgen/vui/actions/workflows/demos.yml/badge.svg"></a>
   <img alt="C++23" src="https://img.shields.io/badge/C%2B%2B-23-8b5cf6">
   <img alt="Platforms" src="https://img.shields.io/badge/platforms-X11%20%7C%20Wayland%20%7C%20Win32%20%7C%20Cocoa-06b6d4">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1e1b3a"></a>
@@ -45,6 +46,20 @@ no second loop to hand work across and nothing to lock.
 <p align="center">
   <img alt="vui_ui_text: line edits, a notes pane and a scrolling log" src="docs/text.png" width="62%">
 </p>
+
+## Try the demos
+
+The task manager and the explorer, built from the latest commit on master. Each is one executable
+that needs nothing installed:
+
+| | |
+| --- | --- |
+| **Windows** (x64) | [vui-demos-windows-x64.zip](https://github.com/jorgen/vui/releases/download/latest/vui-demos-windows-x64.zip) |
+| **macOS** (Apple silicon) | [vui-demos-macos-arm64.tar.gz](https://github.com/jorgen/vui/releases/download/latest/vui-demos-macos-arm64.tar.gz) |
+| **Linux** (x64; X11 or Wayland) | [vui-demos-linux-x64.tar.gz](https://github.com/jorgen/vui/releases/download/latest/vui-demos-linux-x64.tar.gz) |
+
+They are not signed, so Windows and macOS may ask before running one the first time (on macOS,
+allow it under System Settings, Privacy & Security). Every build is on the [latest release](https://github.com/jorgen/vui/releases/tag/latest).
 
 ## What's inside
 

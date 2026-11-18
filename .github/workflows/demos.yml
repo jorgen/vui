@@ -33,7 +33,7 @@ jobs:
           choco install nasm -y --no-progress
           "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-      # Release, with the C runtime linked in, so each executable runs on its own.
+      # The dist-windows preset: Release, the C runtime linked in, no console window.
       - name: Build
         shell: cmd
         run: |
@@ -41,13 +41,13 @@ jobs:
           "%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath > "%RUNNER_TEMP%\vspath.txt"
           set /p VSPATH=<"%RUNNER_TEMP%\vspath.txt"
           call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
-          cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DVUI_BUILD_TESTS=OFF || exit /b 1
-          cmake --build build --target vui_demos_package || exit /b 1
+          cmake --preset dist-windows || exit /b 1
+          cmake --build --preset dist-windows || exit /b 1
 
       - uses: actions/upload-artifact@v4
         with:
           name: vui-demos-windows-x64
-          path: build/vui-demos/
+          path: build-dist/vui-demos/
           if-no-files-found: error
 
   macos:
@@ -116,3 +116,41 @@ jobs:
           name: vui-demos-linux-x64
           path: vui-demos-linux-x64.tar.gz
           if-no-files-found: error
+
+  # The same files under fixed names on one release, "latest", moved to each new build, so the
+  # README can link to them and anyone can download them without signing in.
+  latest:
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-24.04
+    name: latest release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Gather
+        run: |
+          mkdir release
+          mv dist/vui-demos-windows-x64 vui-demos
+          zip -r release/vui-demos-windows-x64.zip vui-demos
+          mv dist/vui-demos-macos-arm64/vui-demos-macos-arm64.tar.gz release/
+          mv dist/vui-demos-linux-x64/vui-demos-linux-x64.tar.gz release/
+          ls -l release
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag -f latest "$GITHUB_SHA"
+          git push -f origin refs/tags/latest
+          notes="The task manager and the explorer, built from ${GITHUB_SHA::7} on master. Unsigned: Windows and macOS may ask before running them the first time."
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest --title "Latest build" --notes "$notes" --prerelease=false --latest
+          else
+            gh release create latest --title "Latest build" --notes "$notes" --latest --verify-tag
+          fi
+          gh release upload latest release/* --clobber
