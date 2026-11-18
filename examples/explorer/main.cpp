@@ -3736,6 +3736,78 @@ std::string ui_test_selected(const explorer_t &ex)
   return out;
 }
 
+// One drag inside the window: press, a few steps past the drag distance, the way to `to`, release.
+vio::task_t<void> ui_test_drag(vio::event_loop_t &loop, vui::window_t &window, vui::point_t from, vui::point_t to)
+{
+  window.impl()->on_input(vui::pointer_move_event_t{from});
+  window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, from});
+  for (int step = 1; step <= 3; ++step)
+    window.impl()->on_input(vui::pointer_move_event_t{{from.x + step * 4.0, from.y}});
+  co_await ui_test_pause(loop, 120);
+  for (int step = 1; step <= 6; ++step)
+    window.impl()->on_input(vui::pointer_move_event_t{{from.x + (to.x - from.x) * step / 6.0, from.y + (to.y - from.y) * step / 6.0}});
+  co_await ui_test_pause(loop, 120);
+  window.impl()->on_input(vui::pointer_move_event_t{{to.x + 1, to.y}});
+  co_await ui_test_pause(loop, 120);
+  window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, {to.x + 1, to.y}});
+  co_await ui_test_pause(loop, 120);
+}
+
+// Drag and drop (G71), all inside the window, through its input queue: the runtime carries a
+// drag until it leaves the window, so nothing here reaches the system's drag and drop. Its own
+// coroutine: inside ui_test it made that one too large for MSVC to optimise (C4737).
+vio::task_t<void> ui_test_drags(vio::event_loop_t &loop, vui::window_t &window, ui::scope_t &scope, explorer_t &ex, std::string folder, int &failures)
+{
+  const auto check = [&failures](bool ok, const std::string &what)
+  {
+    std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.c_str());
+    failures += ok ? 0 : 1;
+  };
+  const auto row = [&](int position)
+  {
+    const auto b = ex.table.body_bounds();
+    return ui_test_at(scope, b.x + 80.0, b.y + position * 26.0 + 13.0);
+  };
+  std::error_code error;
+  const auto there = [&](const char *name) { return std::filesystem::exists(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(shell::join(folder, name).data()), shell::join(folder, name).size())), error); };
+  const auto drag = [&](vui::point_t from, vui::point_t to) { return ui_test_drag(loop, window, from, to); };
+  const auto sub_file = [&](const char *name) { return there((std::string("sub/") + name).c_str()); };
+  co_await ui_test_pause(loop, 550);
+  // Sorted by name: sub, e.txt, f.txt, renamed.txt.
+  co_await drag(row(1), row(0));
+  for (int i = 0; i < 250 && !(sub_file("e.txt") && !there("e.txt") && ex.table.shown() == 3); ++i)
+    co_await ui_test_pause(loop, 20);
+  check(sub_file("e.txt") && !there("e.txt") && there("f.txt"), "a file dragged onto a folder moves into it, and only that file");
+  check(ex.table.shown() == 3, "and leaves the list (" + std::to_string(ex.table.shown()) + ")");
+
+  // A folder dragged onto Places is added where it is let go; a file is not.
+  co_await ui_test_pause(loop, 550);
+  const auto places_before = ex.places.size();
+  const auto slot_after = [&](std::size_t i)
+  {
+    const auto b = ex.place_buttons[i].bounds();
+    return ui_test_at(scope, b.x + 40.0, b.y + b.height + 1.0);
+  };
+  co_await drag(row(1), slot_after(places_before - 1));
+  co_await ui_test_pause(loop, 200);
+  check(ex.places.size() == places_before, "a file dropped on Places is refused");
+  co_await ui_test_pause(loop, 550);
+  co_await drag(row(0), slot_after(places_before - 1));
+  co_await ui_test_pause(loop, 200);
+  const auto sub = shell::join(folder, "sub");
+  check(ex.places.size() == places_before + 1 && ex.places.back().path == sub, "a folder dropped on Places is added there (" + (ex.places.empty() ? std::string() : ex.places.back().path) + ")");
+  // And dragged to the top of Places, it moves there.
+  co_await ui_test_pause(loop, 550);
+  {
+    const auto from = ex.place_buttons[ex.places.size() - 1].bounds();
+    const auto to = ex.place_buttons[0].bounds();
+    co_await drag(ui_test_at(scope, from.x + 40.0, from.y + from.height / 2.0), ui_test_at(scope, to.x + 40.0, to.y + 2.0));
+  }
+  co_await ui_test_pause(loop, 200);
+  check(ex.places.size() == places_before + 1 && ex.places.front().path == sub, "a place dragged to the top of Places moves there (" + (ex.places.empty() ? std::string() : ex.places.front().path) + ")");
+  check(ex.path == folder, "no press reached a place on the way: the folder shown is the same");
+}
+
 // The folder holds "sub" and a.txt to f.txt, shown folders first: sub at row 0, a.txt at row 1.
 vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::string folder, int &failures)
 {
@@ -3835,58 +3907,7 @@ vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::s
     co_await ui_test_pause(loop, 200);
     check(!ex.renaming && there("renamed.txt") && !there("other.txt"), "Escape leaves the name as it was");
 
-    // Drag and drop (G71), all inside the window, through its input queue: the runtime carries a
-    // drag until it leaves the window, so nothing here reaches the system's drag and drop.
-    const auto drag = [&](vui::point_t from, vui::point_t to) -> vio::task_t<void>
-    {
-      window.impl()->on_input(vui::pointer_move_event_t{from});
-      window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, from});
-      for (int step = 1; step <= 3; ++step)
-        window.impl()->on_input(vui::pointer_move_event_t{{from.x + step * 4.0, from.y}});
-      co_await ui_test_pause(loop, 120);
-      for (int step = 1; step <= 6; ++step)
-        window.impl()->on_input(vui::pointer_move_event_t{{from.x + (to.x - from.x) * step / 6.0, from.y + (to.y - from.y) * step / 6.0}});
-      co_await ui_test_pause(loop, 120);
-      window.impl()->on_input(vui::pointer_move_event_t{{to.x + 1, to.y}});
-      co_await ui_test_pause(loop, 120);
-      window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, {to.x + 1, to.y}});
-      co_await ui_test_pause(loop, 120);
-    };
-    const auto sub_file = [&](const char *name) { return there((std::string("sub/") + name).c_str()); };
-    co_await ui_test_pause(loop, 550);
-    // Sorted by name: sub, e.txt, f.txt, renamed.txt.
-    co_await drag(row(1), row(0));
-    for (int i = 0; i < 250 && !(sub_file("e.txt") && !there("e.txt") && ex.table.shown() == 3); ++i)
-      co_await ui_test_pause(loop, 20);
-    check(sub_file("e.txt") && !there("e.txt") && there("f.txt"), "a file dragged onto a folder moves into it, and only that file");
-    check(ex.table.shown() == 3, "and leaves the list (" + std::to_string(ex.table.shown()) + ")");
-
-    // A folder dragged onto Places is added where it is let go; a file is not.
-    co_await ui_test_pause(loop, 550);
-    const auto places_before = ex.places.size();
-    const auto slot_after = [&](std::size_t i)
-    {
-      const auto b = ex.place_buttons[i].bounds();
-      return ui_test_at(scope, b.x + 40.0, b.y + b.height + 1.0);
-    };
-    co_await drag(row(1), slot_after(places_before - 1));
-    co_await ui_test_pause(loop, 200);
-    check(ex.places.size() == places_before, "a file dropped on Places is refused");
-    co_await ui_test_pause(loop, 550);
-    co_await drag(row(0), slot_after(places_before - 1));
-    co_await ui_test_pause(loop, 200);
-    const auto sub = shell::join(folder, "sub");
-    check(ex.places.size() == places_before + 1 && ex.places.back().path == sub, "a folder dropped on Places is added there (" + (ex.places.empty() ? std::string() : ex.places.back().path) + ")");
-    // And dragged to the top of Places, it moves there.
-    co_await ui_test_pause(loop, 550);
-    {
-      const auto from = ex.place_buttons[ex.places.size() - 1].bounds();
-      const auto to = ex.place_buttons[0].bounds();
-      co_await drag(ui_test_at(scope, from.x + 40.0, from.y + from.height / 2.0), ui_test_at(scope, to.x + 40.0, to.y + 2.0));
-    }
-    co_await ui_test_pause(loop, 200);
-    check(ex.places.size() == places_before + 1 && ex.places.front().path == sub, "a place dragged to the top of Places moves there (" + (ex.places.empty() ? std::string() : ex.places.front().path) + ")");
-    check(ex.path == folder, "no press reached a place on the way: the folder shown is the same");
+    co_await ui_test_drags(loop, window, scope, ex, folder, failures);
 
     // The Name column's edge, dragged 100 to the left, and a double click on it to fill again.
     const int before = ex.table.name_column_width();
