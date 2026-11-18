@@ -1154,3 +1154,12 @@ The runtime still carries the drag where the backend refuses one -- X11, Wayland
 backend -- and where `window_t::allow_system_drag(false)` says so. The explorer's UI test does that:
 it drives the window through its input queue, while OLE's drag follows the real pointer and the
 real button, and would drop wherever the user's mouse happened to be.
+
+Only a target that forwards to IDropTargetHelper draws the shell's image; over any other window
+Windows shows its old arrow with a dotted box. So the drag source draws the picture itself there:
+`drag_source_t`, our IDropSource for SHDoDragDrop, reads "IsShowingLayered" from the data object on
+each GiveFeedback (the helper sets it to 1 on DragEnter and 0 on DragLeave, which an offscreen
+probe confirmed), and when no target draws the image it shows the same picture and an action label
+in a click-through layered window at the pointer, with the arrow as the cursor. Where the target
+does draw it, our window hides, and the source writes the action as the drop description unless
+the target has written its own words ("Move to Documents").

@@ -700,6 +700,337 @@ SHDRAGIMAGE drag_image(const std::string &path)
   return image;
 }
 
+// ---- The drag image over windows that do not draw it (G72). A drop target that forwards to
+// IDropTargetHelper draws the shell's image and says so by setting "IsShowingLayered" on the data
+// object (1 on enter, 0 on leave); over any other window the drag source draws the same picture
+// itself, in a layered window that follows the pointer, so a drag looks the same everywhere.
+
+int read_flag(IDataObject *data, const wchar_t *format)
+{
+  FORMATETC f{CLIPFORMAT(RegisterClipboardFormatW(format)), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  STGMEDIUM medium{};
+  if (FAILED(data->GetData(&f, &medium)))
+    return -1;
+  int value = -1;
+  if (const auto *p = static_cast<const BOOL *>(GlobalLock(medium.hGlobal)))
+  {
+    value = *p;
+    GlobalUnlock(medium.hGlobal);
+  }
+  ReleaseStgMedium(&medium);
+  return value;
+}
+
+std::optional<DROPDESCRIPTION> read_description(IDataObject *data)
+{
+  FORMATETC f{CLIPFORMAT(RegisterClipboardFormatW(L"DropDescription")), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  STGMEDIUM medium{};
+  if (FAILED(data->GetData(&f, &medium)))
+    return std::nullopt;
+  std::optional<DROPDESCRIPTION> out;
+  if (const auto *p = static_cast<const DROPDESCRIPTION *>(GlobalLock(medium.hGlobal)))
+  {
+    out = *p;
+    GlobalUnlock(medium.hGlobal);
+  }
+  ReleaseStgMedium(&medium);
+  return out;
+}
+
+void write_description(IDataObject *data, DROPIMAGETYPE type, const wchar_t *message)
+{
+  HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(DROPDESCRIPTION));
+  if (!memory)
+    return;
+  if (auto *p = static_cast<DROPDESCRIPTION *>(GlobalLock(memory)))
+  {
+    p->type = type;
+    lstrcpynW(p->szMessage, message, MAX_PATH);
+    GlobalUnlock(memory);
+  }
+  FORMATETC f{CLIPFORMAT(RegisterClipboardFormatW(L"DropDescription")), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  STGMEDIUM medium{};
+  medium.tymed = TYMED_HGLOBAL;
+  medium.hGlobal = memory;
+  if (FAILED(data->SetData(&f, &medium, TRUE)))
+    GlobalFree(memory);
+}
+
+// The first item's picture as premultiplied, top-down pixels, the way UpdateLayeredWindow takes them.
+struct pixels_t
+{
+  std::vector<std::uint32_t> data;
+  int width = 0;
+  int height = 0;
+};
+
+pixels_t read_pixels(HBITMAP bitmap)
+{
+  pixels_t out;
+  BITMAP info{};
+  if (!bitmap || !GetObjectW(bitmap, sizeof(info), &info))
+    return out;
+  out.width = info.bmWidth;
+  out.height = std::abs(info.bmHeight);
+  out.data.resize(std::size_t(out.width) * out.height);
+  BITMAPINFO bi{};
+  bi.bmiHeader = {sizeof(BITMAPINFOHEADER), out.width, -out.height, 1, 32, BI_RGB};
+  HDC screen = GetDC(nullptr);
+  const int lines = GetDIBits(screen, bitmap, 0, UINT(out.height), out.data.data(), &bi, DIB_RGB_COLORS);
+  ReleaseDC(nullptr, screen);
+  if (lines != out.height)
+    return {};
+  // A thumbnail may have no alpha at all, and an icon may be straight rather than premultiplied.
+  bool any_alpha = false, straight = false;
+  for (const auto p : out.data)
+  {
+    const auto a = p >> 24;
+    any_alpha = any_alpha || a != 0;
+    straight = straight || ((p >> 16) & 0xff) > a || ((p >> 8) & 0xff) > a || (p & 0xff) > a;
+  }
+  for (auto &p : out.data)
+  {
+    if (!any_alpha)
+      p |= 0xff000000u;
+    else if (straight)
+    {
+      const auto a = p >> 24;
+      p = (a << 24) | ((((p >> 16) & 0xff) * a / 255) << 16) | ((((p >> 8) & 0xff) * a / 255) << 8) | ((p & 0xff) * a / 255);
+    }
+  }
+  return out;
+}
+
+const wchar_t drag_image_class[] = L"vui_drag_image";
+
+LRESULT CALLBACK drag_image_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
+{
+  if (message == WM_NCHITTEST)
+    return HTTRANSPARENT;
+  return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
+// The drop source given to SHDoDragDrop: the usual button and Escape rules, the arrow for a cursor,
+// and the picture drawn by whichever side is not the target.
+class drag_source_t final : public IDropSource
+{
+public:
+  drag_source_t(IDataObject *data, HWND owner, const std::string &first)
+    : _data(data)
+    , _dpi(GetDpiForWindow(owner))
+  {
+    SHDRAGIMAGE image = drag_image(first);
+    _image = read_pixels(image.hbmpDragImage);
+    _offset = image.ptOffset;
+    if (image.hbmpDragImage)
+      DeleteObject(image.hbmpDragImage);
+  }
+  ~drag_source_t()
+  {
+    if (_window)
+      DestroyWindow(_window);
+  }
+  drag_source_t(const drag_source_t &) = delete;
+  drag_source_t &operator=(const drag_source_t &) = delete;
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **out) override
+  {
+    if (riid == IID_IUnknown || riid == IID_IDropSource)
+    {
+      *out = static_cast<IDropSource *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *out = nullptr;
+    return E_NOINTERFACE;
+  }
+  // Lives on run_drag's stack, which outlasts the drag.
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++_refs; }
+  ULONG STDMETHODCALLTYPE Release() override { return --_refs; }
+
+  HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escape, DWORD keys) override
+  {
+    if (escape)
+      return DRAGDROP_S_CANCEL;
+    if (!(keys & MK_LBUTTON))
+      return DRAGDROP_S_DROP;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD effect) override
+  {
+    POINT at{};
+    GetCursorPos(&at);
+    const HWND under = GetAncestor(WindowFromPoint(at), GA_ROOT);
+    const bool moved_on = under != _under;
+    _under = under;
+    if (read_flag(_data, L"IsShowingLayered") > 0)
+    {
+      hide();
+      describe(effect, moved_on);
+      SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)));
+    }
+    else
+    {
+      show(effect, at);
+      SetCursor(LoadCursorW(nullptr, effect == DROPEFFECT_NONE ? MAKEINTRESOURCEW(32648) : MAKEINTRESOURCEW(32512)));
+    }
+    return S_OK;
+  }
+
+private:
+  static DROPIMAGETYPE type_for(DWORD effect) noexcept
+  {
+    if (effect & DROPEFFECT_MOVE)
+      return DROPIMAGE_MOVE;
+    if (effect & DROPEFFECT_COPY)
+      return DROPIMAGE_COPY;
+    if (effect & DROPEFFECT_LINK)
+      return DROPIMAGE_LINK;
+    return DROPIMAGE_NONE;
+  }
+  static const wchar_t *word_for(DWORD effect) noexcept
+  {
+    if (effect & DROPEFFECT_MOVE)
+      return L"Move";
+    if (effect & DROPEFFECT_COPY)
+      return L"Copy";
+    if (effect & DROPEFFECT_LINK)
+      return L"Link";
+    return L"";
+  }
+
+  // What the shell's image says: the target's own words where it gave some, else the action.
+  void describe(DWORD effect, bool moved_on)
+  {
+    const auto current = read_description(_data);
+    const bool ours = !current || current->type == DROPIMAGE_INVALID || moved_on ||
+                      (current->type == _written_type && std::wcscmp(current->szMessage, _written) == 0);
+    if (!ours)
+      return;
+    const auto type = type_for(effect);
+    const auto *word = word_for(effect);
+    if (current && current->type == type && std::wcscmp(current->szMessage, word) == 0)
+      return;
+    write_description(_data, type, word);
+    _written_type = type;
+    lstrcpynW(_written, word, MAX_PATH);
+  }
+
+  void hide()
+  {
+    if (_window && IsWindowVisible(_window))
+      ShowWindow(_window, SW_HIDE);
+  }
+
+  int scaled(int value) const noexcept { return MulDiv(value, int(_dpi ? _dpi : 96), 96); }
+
+  void show(DWORD effect, POINT at)
+  {
+    if (_image.data.empty())
+      return;
+    if (!_window)
+    {
+      static const ATOM registered = []
+      {
+        WNDCLASSEXW wc{sizeof(wc)};
+        wc.lpfnWndProc = drag_image_proc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = drag_image_class;
+        return RegisterClassExW(&wc);
+      }();
+      (void)registered;
+      _window = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, drag_image_class, L"",
+                                WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+      if (!_window)
+        return;
+    }
+    const POINT origin{at.x - _offset.x, at.y - _offset.y};
+    if (effect == _drawn_effect)
+    {
+      SetWindowPos(_window, HWND_TOPMOST, origin.x, origin.y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+      return;
+    }
+    _drawn_effect = effect;
+    paint(effect, origin);
+  }
+
+  // The picture, and under the pointer a label with the action, as the shell lays its own out.
+  void paint(DWORD effect, POINT origin)
+  {
+    HDC screen = GetDC(nullptr);
+    HDC dc = CreateCompatibleDC(screen);
+    HFONT font = CreateFontW(-MulDiv(9, int(_dpi ? _dpi : 96), 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    auto *old_font = SelectObject(dc, font);
+    const wchar_t *glyph = (effect & DROPEFFECT_MOVE) ? L"→  " : (effect & DROPEFFECT_COPY) ? L"+  " : L"";
+    const std::wstring text = std::wstring(glyph) + word_for(effect);
+    SIZE extent{};
+    if (!text.empty())
+      GetTextExtentPoint32W(dc, text.c_str(), int(text.size()), &extent);
+    const int pad = scaled(6);
+    const int lw = text.empty() ? 0 : extent.cx + 2 * pad, lh = text.empty() ? 0 : extent.cy + pad;
+    const int lx = _offset.x + scaled(6), ly = _offset.y + scaled(18);
+    const int width = std::max(_image.width, lx + lw), height = std::max(_image.height, ly + lh);
+
+    BITMAPINFO bi{};
+    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_RGB};
+    void *bits = nullptr;
+    HBITMAP canvas = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (canvas && bits)
+    {
+      auto *px = static_cast<std::uint32_t *>(bits);
+      std::fill(px, px + std::size_t(width) * height, 0u);
+      for (int y = 0; y < _image.height; ++y)
+        std::copy_n(&_image.data[std::size_t(y) * _image.width], _image.width, px + std::size_t(y) * width);
+      auto *old_bitmap = SelectObject(dc, canvas);
+      if (lw > 0)
+      {
+        for (int y = ly; y < ly + lh; ++y)
+        {
+          for (int x = lx; x < lx + lw; ++x)
+          {
+            const bool edge = y == ly || y == ly + lh - 1 || x == lx || x == lx + lw - 1;
+            px[std::size_t(y) * width + x] = edge ? 0xffa0a0a0u : 0xffffffffu;
+          }
+        }
+        GdiFlush();
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(0, 0, 0));
+        TextOutW(dc, lx + pad, ly + pad / 2, text.c_str(), int(text.size()));
+        GdiFlush();
+        // GDI writes no alpha: the label is opaque.
+        for (int y = ly; y < ly + lh; ++y)
+          for (int x = lx; x < lx + lw; ++x)
+            px[std::size_t(y) * width + x] |= 0xff000000u;
+      }
+      POINT source{0, 0};
+      SIZE size{width, height};
+      BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+      UpdateLayeredWindow(_window, screen, &origin, &size, dc, &source, 0, &blend, ULW_ALPHA);
+      SetWindowPos(_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+      SelectObject(dc, old_bitmap);
+    }
+    if (canvas)
+      DeleteObject(canvas);
+    SelectObject(dc, old_font);
+    DeleteObject(font);
+    DeleteDC(dc);
+    ReleaseDC(nullptr, screen);
+  }
+
+  IDataObject *_data;
+  UINT _dpi;
+  ULONG _refs = 1;
+  pixels_t _image;
+  POINT _offset{};
+  HWND _window = nullptr;
+  HWND _under = nullptr;
+  DWORD _drawn_effect = ~DWORD(0);
+  DROPIMAGETYPE _written_type = DROPIMAGE_INVALID;
+  wchar_t _written[MAX_PATH] = {};
+};
+
 // A shell data object for the paths: what Explorer itself hands out, with CF_HDROP for programs
 // that read only that, and the shell's own list of items for those that read more.
 IDataObject *make_data_object(const std::vector<std::string> &paths)
@@ -821,8 +1152,9 @@ void win32_window_t::run_drag()
         DeleteObject(image.hbmpDragImage);
       helper->Release();
     }
+    drag_source_t source(data, handle, _drag_paths.front());
     thread.enter_modal();
-    const HRESULT done = SHDoDragDrop(handle, data, nullptr, DWORD(_drag_allowed), &effect);
+    const HRESULT done = SHDoDragDrop(handle, data, &source, DWORD(_drag_allowed), &effect);
     thread.leave_modal();
     data->Release();
     if (done == DRAGDROP_S_DROP)
