@@ -251,6 +251,10 @@ std::filesystem::path as_path(const std::string &s)
 
 // Where the places are kept; the probe points it elsewhere so it never touches the user's own list.
 std::string config_override;
+// The UI test's own folder. While it is set nothing is opened, deleted, renamed, moved or copied
+// outside it, whatever a stray click in the test leads to: one in a short window once took the
+// test up a level, into the user's temporary folder, and it deleted and renamed there.
+std::string ui_test_sandbox;
 
 std::string config_dir()
 {
@@ -2384,6 +2388,8 @@ struct explorer_t
   void launch_on(worker_t *worker, std::function<std::expected<void, std::string>()> what, std::string done, std::function<void(ui::scope_t &)> then,
                  std::function<void(ui::scope_t &)> always = {})
   {
+    if (outside_sandbox(path))
+      return;
     auto *p = pipe;
     worker->post(
       [this, p, what = std::move(what), done = std::move(done), then = std::move(then), always = std::move(always)]
@@ -2406,6 +2412,15 @@ struct explorer_t
             scope.invalidate();
           });
       });
+  }
+
+  // Whether the UI test is running and `where` is outside its folder, which it then refuses.
+  bool outside_sandbox(const std::string &where)
+  {
+    if (ui_test_sandbox.empty() || within(where, ui_test_sandbox))
+      return false;
+    say("refused: the UI test does nothing outside its own folder (" + where + ")", true);
+    return true;
   }
 
   // ---- drag and drop (G71)
@@ -2482,6 +2497,11 @@ struct explorer_t
 
   void drop_files(const std::vector<std::string> &items, const std::string &into, bool move)
   {
+    if (outside_sandbox(into))
+      return;
+    for (const auto &item : items)
+      if (outside_sandbox(item))
+        return;
     const auto first = items.front().substr(std::min(items.front().size(), items.front().find_last_of("\\/") + 1));
     const auto name = into.substr(std::min(into.size(), into.find_last_of("\\/") + 1));
     bool touches_here = within(into, path) && within(path, into);
@@ -2672,6 +2692,11 @@ struct explorer_t
       say("No files were cut or copied to paste", true);
       return;
     }
+    if (outside_sandbox(into))
+      return;
+    for (const auto &item : files->items)
+      if (outside_sandbox(item))
+        return;
     const auto items = files->items;
     const bool cut = files->cut;
     const auto first = items.front().substr(std::min(items.front().size(), items.front().find_last_of("\\/") + 1));
@@ -2754,6 +2779,8 @@ struct explorer_t
     const auto entries = *confirming;
     const bool permanent = confirming_permanent;
     confirming.reset();
+    if (outside_sandbox(path))
+      return;
     const auto folder = path;
     const auto what = entries.size() == 1 ? entries.front().name : grouped(entries.size()) + " items";
     say(permanent ? "Deleting " + what + "..." : "Moving " + what + " to the " + shell::trash_name() + "...");
@@ -4040,7 +4067,12 @@ vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::s
       const auto b = ex.table.body_bounds();
       return ui_test_at(scope, b.x + 80.0, b.y + position * 26.0 + 13.0);
     };
+    // What adds a row to a selection: Cmd on a Mac, Ctrl elsewhere.
+#if defined(__APPLE__)
+    const auto command = vui::modifier_t::super;
+#else
     const auto command = vui::modifier_t::control;
+#endif
     const auto expect = [&](const std::string &wanted, const std::string &what) { check(ui_test_selected(ex) == wanted, what + " (" + ui_test_selected(ex) + ")"); };
 
     ui_test_click(window, row(1));
@@ -4113,7 +4145,12 @@ vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::s
     co_await ui_test_drags(loop, window, scope, ex, folder, failures);
     co_await ui_test_panels(loop, window, scope, ex, failures);
 
-    // The Name column's edge, dragged 100 to the left, and a double click on it to fill again.
+    // The Name column's edge, dragged 100 to the left, and a double click on it to fill again. On a
+    // small screen, as CI's is, the window is narrower than asked and the Name column has no room
+    // to give: the side panels give theirs, at their narrowest. These are the last steps.
+    ex.panels = {min_sidebar, min_details};
+    scope.invalidate();
+    co_await ui_test_pause(loop, 300);
     const int before = ex.table.name_column_width();
     const auto grip = ex.table.grip_bounds(0);
     const double gx = grip.x + grip.width / 2.0, gy = grip.y + grip.height / 2.0;
@@ -4211,6 +4248,7 @@ int ui_test_main()
   std::ofstream(std::filesystem::path(folder) / "sub" / "inner.txt", std::ios::binary) << "inner";
   // Places read from and written to the test's own folder, never the user's.
   config_override = shell::join(scratch, "settings");
+  ui_test_sandbox = scratch;
   int failures = 0;
   const int code = vio::run(
     [scratch, &failures](vio::event_loop_t &loop) -> vio::task_t<int>
