@@ -997,3 +997,14 @@ folder's size and file count, "so far" until it is done.
 The sizes are logical: what the files hold, not what they occupy on disk, which Explorer's
 Properties also reports first. A tree with millions of files takes as long as reading it does; it
 runs on its own thread, so nothing waits for it.
+
+## G66. A grid of equal cells
+
+`grid_t` lays its children out in a fixed number of columns, all one width: the widest child, or an
+equal share of the width the grid is given if that is more. Rows are as tall as their tallest
+child. The task manager's per-core charts needed it. They were rows of rows, each chart set to grow
+and a spacer filling each empty slot in the last row. A row hands out only the space left after each
+child's natural width, and a spacer has none, so the charts in a short last row came out wider than
+the ones above. A grid sizes cells from the grid, not from what else shares the row.
+
+The grid does not hand out height: a grid given more height than its rows need leaves it below them.

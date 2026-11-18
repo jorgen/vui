@@ -799,6 +799,21 @@ struct column_t
   std::vector<node_t> children;
 };
 
+// Children in `columns` columns of one width, filled row by row from the top left (G66). A column
+// is as wide as the widest child, or as an equal share of the width the grid is given if that is
+// more; a row is as tall as its tallest child. A short last row keeps the cells of the rows above
+// it. `align` places each child in its cell, on both axes; stretch fills the cell.
+struct grid_t
+{
+  int columns = 1;
+  int gap_x = 0;
+  int gap_y = 0;
+  align_t align = align_t::start;
+  edges_t padding;
+  float grow = 0;
+  std::vector<node_t> children;
+};
+
 // The values of a heatmap: `columns * rows` of them, row by row from the top. Shared, because a
 // heatmap is uploaded into the glyph atlas once and found again by this object's address: after
 // changing `values`, bump `version` so the next layout uploads them again (G44).
@@ -923,7 +938,7 @@ struct mount_t
   }
 };
 
-struct node_t : std::variant<box_t, row_t, column_t, mount_t, text_t, icon_t, at_t, polyline_t, spacer_t, heatmap_t, image_t>
+struct node_t : std::variant<box_t, row_t, column_t, mount_t, text_t, icon_t, at_t, polyline_t, spacer_t, heatmap_t, image_t, grid_t>
 {
   using variant::variant;
 };

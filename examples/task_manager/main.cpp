@@ -864,25 +864,14 @@ struct task_manager_t
     ui::node_t per_core;
     if (core_mode == 0)
     {
-      const std::size_t per_row = cores <= 8 ? std::max<std::size_t>(cores, 1) : 8;
-      ui::column_t grid{.gap = 6, .align = ui::align_t::stretch};
-      for (std::size_t first = 0; first < cores; first += per_row)
+      ui::grid_t grid{.columns = int(std::min<std::size_t>(cores, 8)), .gap_x = 8, .gap_y = 6, .align = ui::align_t::stretch};
+      for (std::size_t c = 0; c < cores; ++c)
       {
-        ui::row_t line{.gap = 8, .align = ui::align_t::stretch};
-        for (std::size_t c = first; c < first + per_row; ++c)
-        {
-          if (c >= cores)
-          {
-            line.children.push_back(ui::spacer_t{});
-            continue;
-          }
-          const float now = core_history[c].empty() ? 0 : core_history[c].back() * 100;
-          line.children.push_back(filling(ui::column_t{.gap = 2,
-                                                        .align = ui::align_t::stretch,
-                                                        .children = {muted(std::to_string(c) + "  " + fixed(now, 0) + "%", 11),
-                                                                     ui::mount(core_charts[c], {.values = values(core_history[c]), .color = cpu_color, .height = cores > 16 ? 22 : 30, .grid = false})}}));
-        }
-        grid.children.push_back(std::move(line));
+        const float now = core_history[c].empty() ? 0 : core_history[c].back() * 100;
+        grid.children.push_back(ui::column_t{.gap = 2,
+                                             .align = ui::align_t::stretch,
+                                             .children = {muted(std::to_string(c) + "  " + fixed(now, 0) + "%", 11),
+                                                          ui::mount(core_charts[c], {.values = values(core_history[c]), .color = cpu_color, .height = cores > 16 ? 22 : 30, .grid = false})}});
       }
       per_core = std::move(grid);
     }

@@ -23,6 +23,7 @@ Copyright (c) 2026 Jørgen Lind
 #include "vui/ui/ui.h"
 
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <string>
@@ -242,6 +243,8 @@ const std::vector<node_t> *children_of(const node_t &node) noexcept
     return &row->children;
   if (const auto *column = std::get_if<column_t>(&node))
     return &column->children;
+  if (const auto *grid = std::get_if<grid_t>(&node))
+    return &grid->children;
   if (const auto *box = std::get_if<box_t>(&node))
     return &box->children;
   if (const auto *at = std::get_if<at_t>(&node))
@@ -1065,6 +1068,8 @@ private:
       return row->grow;
     if (const auto *column = std::get_if<column_t>(&node))
       return column->grow;
+    if (const auto *grid = std::get_if<grid_t>(&node))
+      return grid->grow;
     if (const auto *spacer = std::get_if<spacer_t>(&node))
       return spacer->grow;
     return 0;
@@ -1148,6 +1153,8 @@ private:
     }
     if (const auto *row = std::get_if<row_t>(&node))
       return place_line(slot, row->children, true, row->gap, row->align, row->padding, x, y, ordinal, want);
+    if (const auto *grid = std::get_if<grid_t>(&node))
+      return place_grid(slot, *grid, x, y, ordinal, want);
     const auto &column = std::get<column_t>(node);
     return place_line(slot, column.children, false, column.gap, column.align, column.padding, x, y, ordinal, want);
   }
@@ -1345,6 +1352,49 @@ private:
     }
     const extent_t content = horizontal ? extent_t{along, across} : extent_t{across, along};
     return {{content.width + pad.left + pad.right, content.height + pad.top + pad.bottom}, baseline};
+  }
+
+  placed_t place_grid(slot_t &slot, const grid_t &grid, float x, float y, int &ordinal, extent_t want)
+  {
+    assert(grid.columns > 0);
+    const auto &pad = grid.padding;
+    const auto columns = std::size_t(grid.columns);
+    const std::size_t rows = (grid.children.size() + columns - 1) / columns;
+
+    int cell_width = 0;
+    std::vector<int> row_heights(rows, 0);
+    for (std::size_t i = 0; i < grid.children.size(); ++i)
+    {
+      const auto natural = measure(slot, grid.children[i]).size;
+      cell_width = std::max(cell_width, natural.width);
+      row_heights[i / columns] = std::max(row_heights[i / columns], natural.height);
+    }
+    const int gaps_x = grid.gap_x * (grid.columns - 1);
+    if (want.width >= 0)
+      cell_width = std::max(cell_width, (want.width - pad.left - pad.right - gaps_x) / grid.columns);
+
+    const bool stretch = grid.align == align_t::stretch;
+    float baseline = -1;
+    int top = 0;
+    for (std::size_t r = 0; r < rows; ++r)
+    {
+      if (r > 0)
+        top += grid.gap_y;
+      for (std::size_t c = 0; c < columns && r * columns + c < grid.children.size(); ++c)
+      {
+        const int left = int(c) * (cell_width + grid.gap_x);
+        const extent_t cell_want = stretch ? extent_t{cell_width, row_heights[r]} : unconstrained;
+        const auto child = place_child(slot, grid.children[r * columns + c], x + float(pad.left + left), y + float(pad.top + top), ordinal, cell_want);
+        const float dx = aligned(grid.align, cell_width, child.placed.size.width, _scale);
+        const float dy = aligned(grid.align, row_heights[r], child.placed.size.height, _scale);
+        shift(slot, child, dx, dy);
+        if (baseline < 0 && child.placed.has_baseline())
+          baseline = float(pad.top + top) + dy + child.placed.baseline;
+      }
+      top += row_heights[r];
+    }
+    const int content_width = rows > 0 ? cell_width * grid.columns + gaps_x : 0;
+    return {{std::max(content_width + pad.left + pad.right, want.width), std::max(top + pad.top + pad.bottom, want.height)}, baseline};
   }
 
   // Areas first, so the line covers the antialiased top edge of its own fill; then the segments;

@@ -201,6 +201,40 @@ TEST_CASE("ui layout: rows and columns place their children across, inside their
   CHECK(seen.rects[4].x == 0);
 }
 
+TEST_CASE("ui layout: a grid splits its width into equal cells, and a short last row keeps them")
+{
+  struct grid_view_t
+  {
+    ui::align_t align;
+
+    ui::node_t view() const
+    {
+      return ui::grid_t{.columns = 3,
+                        .gap_x = 2,
+                        .gap_y = 4,
+                        .align = align,
+                        .children = {ui::box_t{.size = {10, 10}, .color = red}, ui::box_t{.size = {10, 10}, .color = green}, ui::box_t{.size = {10, 10}, .color = blue}, ui::box_t{.size = {10, 20}, .color = red}}};
+    }
+  };
+
+  // The root is given the 300 wide window: (300 - 2 * 2) / 3 = 98 wide cells. The second row is as
+  // tall as its one child.
+  grid_view_t stretched{ui::align_t::stretch};
+  capture_t seen;
+  capture(stretched, seen);
+  REQUIRE(seen.rects.size() == 4);
+  CHECK(seen.rects[0] == ui::rect_t{0, 0, 98, 10});
+  CHECK(seen.rects[1] == ui::rect_t{100, 0, 98, 10});
+  CHECK(seen.rects[2] == ui::rect_t{200, 0, 98, 10});
+  CHECK(seen.rects[3] == ui::rect_t{0, 14, 98, 20});
+
+  grid_view_t centred{ui::align_t::center};
+  capture(centred, seen);
+  REQUIRE(seen.rects.size() == 4);
+  CHECK(seen.rects[1] == ui::rect_t{100 + 44, 0, 10, 10});
+  CHECK(seen.rects[3] == ui::rect_t{44, 14, 10, 20});
+}
+
 TEST_CASE("ui layout: pressing what is drawn on a button presses the button")
 {
   struct button_t
