@@ -1640,6 +1640,9 @@ struct explorer_t
   // What a Delete is asking about: one entry or several.
   std::optional<std::vector<shell::entry_t>> confirming;
   bool confirming_permanent = false;
+  // Or whether Places should go back to the standard folders, which loses every one added.
+  bool confirming_reset = false;
+  [[nodiscard]] bool asking() const noexcept { return confirming.has_value() || confirming_reset; }
 
   // Drag and drop (G71): where in Places a drop would go, shown as a line; the folders among what is
   // dragged over Places, worked out when it comes in; and the folder a drop on the list goes to.
@@ -2045,9 +2048,8 @@ struct explorer_t
       }
       break;
     case action_t::reset_places:
-      places = shell::places();
-      keep_places();
-      say("Places reset to the standard folders");
+      menu_at.reset();
+      confirming_reset = true;
       break;
     default:
       break;
@@ -2640,6 +2642,26 @@ struct explorer_t
       return;
     const auto from = shell::join(path, old);
     launch_on(helper, [from, name] { return shell::rename_item(from, name); }, "Renamed " + old + " to " + name, [this, name](ui::scope_t &scope) { go(scope, path, false, name); });
+  }
+
+  // Yes or no to the question asked.
+  void answer(ui::scope_t &scope, bool yes)
+  {
+    if (confirming_reset)
+    {
+      confirming_reset = false;
+      if (yes)
+      {
+        places = shell::places();
+        keep_places();
+        say("Places reset to the standard folders");
+      }
+      return;
+    }
+    if (yes)
+      trash_confirmed(scope);
+    else
+      confirming.reset();
   }
 
   void ask_to_trash(std::vector<shell::entry_t> entries, bool permanent)
@@ -3392,7 +3414,7 @@ struct explorer_t
                                    ui::row_t{.gap = 12,
                                              .align = ui::align_t::stretch,
                                              .grow = 1,
-                                             .children = {sidebar(), ui::box_t{.color = clear, .grow = 1, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {ui::mount(table, {.filter = filter, .show_hidden = show_hidden, .types_version = types_version, .passive = menu_at.has_value() || confirming.has_value()})}},
+                                             .children = {sidebar(), ui::box_t{.color = clear, .grow = 1, .align_x = ui::align_t::stretch, .align_y = ui::align_t::stretch, .children = {ui::mount(table, {.filter = filter, .show_hidden = show_hidden, .types_version = types_version, .passive = menu_at.has_value() || asking()})}},
                                                           details()}},
                                    status_bar()}};
     // The menu, over everything, where it was opened.
@@ -3407,7 +3429,16 @@ struct explorer_t
     }
     if (menu_at)
       whole.children.push_back(ui::at_t{.x = float(menu_at->x), .y = float(menu_at->y), .children = {ui::mount(menu, {.items = menu_items}).on_top(menu.dismiss)}});
-    if (confirming)
+    if (confirming_reset)
+    {
+      const auto b = table.body_bounds();
+      confirm_t::props_t ask{.title = "Reset Places to the standard folders?",
+                             .message = "Every folder you added to Places is removed, and the order goes back to the standard one.",
+                             .confirm = "Reset Places",
+                             .danger = true};
+      whole.children.push_back(ui::at_t{.x = float(b.x + b.width / 2 - 200), .y = float(b.y + 60), .children = {ui::mount(confirm, std::move(ask)).on_top(confirm.dismiss)}});
+    }
+    else if (confirming)
     {
       // Centred over the list, near its top.
       const auto b = table.body_bounds();
@@ -3607,7 +3638,7 @@ struct explorer_t
         break;
       case 19:
         // The mouse's back and forward buttons; a menu open closes, a question asked stays.
-        if (confirming)
+        if (asking())
           break;
         menu_at.reset();
         if (std::get<19>(*event).forward)
@@ -3620,13 +3651,10 @@ struct explorer_t
           editing_path = false;
         break;
       case 11:
-        if (std::get<11>(*event))
-          trash_confirmed(scope);
-        else
-          confirming.reset();
+        answer(scope, std::get<11>(*event));
         break;
       case 12:
-        confirming.reset();
+        answer(scope, false);
         break;
       case 10:
       {
@@ -3637,12 +3665,12 @@ struct explorer_t
         const bool ctrl = vui::has(key.modifiers, vui::modifier_t::control) || vui::has(key.modifiers, vui::modifier_t::super);
         const bool shift = vui::has(key.modifiers, vui::modifier_t::shift);
         // While asking, Enter is yes and Escape is no; nothing else happens.
-        if (confirming)
+        if (asking())
         {
           if (key.key == vui::key_t::enter || key.key == vui::key_t::keypad_enter)
-            trash_confirmed(scope);
+            answer(scope, true);
           else if (key.key == vui::key_t::escape)
-            confirming.reset();
+            answer(scope, false);
           break;
         }
         // While the menu is open it has the keys it wants, and Escape closes it.
@@ -3806,6 +3834,21 @@ vio::task_t<void> ui_test_drags(vio::event_loop_t &loop, vui::window_t &window, 
   co_await ui_test_pause(loop, 200);
   check(ex.places.size() == places_before + 1 && ex.places.front().path == sub, "a place dragged to the top of Places moves there (" + (ex.places.empty() ? std::string() : ex.places.front().path) + ")");
   check(ex.path == folder, "no press reached a place on the way: the folder shown is the same");
+
+  // Resetting Places asks first: Escape keeps them, Enter resets.
+  co_await ui_test_pause(loop, 200);
+  ex.act_on_place(scope, action_t::reset_places, 0);
+  co_await ui_test_pause(loop, 120);
+  check(ex.confirming_reset && ex.places.front().path == sub, "Reset to the standard folders asks first, and changes nothing yet");
+  ui_test_key(window, vui::key_t::escape);
+  co_await ui_test_pause(loop, 120);
+  check(!ex.confirming_reset && ex.places.front().path == sub, "Escape keeps Places as they were");
+  ex.act_on_place(scope, action_t::reset_places, 0);
+  co_await ui_test_pause(loop, 120);
+  ui_test_key(window, vui::key_t::enter);
+  co_await ui_test_pause(loop, 120);
+  const auto standard = shell::places();
+  check(!ex.confirming_reset && ex.places.size() == standard.size() && !ex.places.empty() && ex.places.front().path == standard.front().path, "Enter resets them");
 }
 
 // The folder holds "sub" and a.txt to f.txt, shown folders first: sub at row 0, a.txt at row 1.
