@@ -3878,6 +3878,13 @@ struct explorer_t
 
 // ---- --ui-test: the window itself, driven through its input queue, for CI
 
+// Compiled without optimisation on MSVC: a long test coroutine makes its optimiser fail to do the
+// tail call a coroutine requires (C4737, an error), at a length that differs between compiler
+// versions -- 14.51 refused what 14.44 took. Unoptimised it never does, and a test needs no speed.
+#if defined(_MSC_VER) && !defined(__clang__)
+#pragma optimize("", off)
+#endif
+
 vio::task_t<void> ui_test_pause(vio::event_loop_t &loop, int milliseconds)
 {
   (void)co_await vio::sleep(loop, std::chrono::milliseconds(milliseconds));
@@ -4235,6 +4242,9 @@ vio::task_t<void> ui_test_small(vio::event_loop_t &loop, vui::window_t &window, 
   }
   window.impl()->on_close_request();
 }
+#if defined(_MSC_VER) && !defined(__clang__)
+#pragma optimize("", on)
+#endif
 
 int ui_test_main()
 {
