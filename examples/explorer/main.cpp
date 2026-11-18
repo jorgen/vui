@@ -584,6 +584,10 @@ public:
   ui::event_source_t<long> selected;
   ui::event_source_t<long> activated;
   ui::event_source_t<table_context_t> context;
+  // The selection dragged far enough to be dragged somewhere (G71), and a drag of it that ended in
+  // a move, which took the items out of this folder.
+  ui::event_source_t<long> drag_out;
+  ui::event_source_t<long> moved_out;
   // Extensions the visible rows need a name for, which the parent should look up.
   std::function<void(const std::string &)> want_type;
   // What a folder in this listing holds, once it has been counted or while it is.
@@ -687,6 +691,7 @@ public:
     _anchor = -1;
     _marked.assign(_entries.size(), 0);
     _scroll = 0;
+    _drop_row = -1;
     _pending_select = std::move(select);
     take_pending_select(scope);
     dirty();
@@ -818,6 +823,8 @@ public:
     ui::box_t body{.size = {300, 52},
                    .color = well,
                    .radius = 6,
+                   .border_width = _drop_row == whole ? 2.0f : 0.0f,
+                   .border_color = t.accent,
                    .events = _body,
                    .grow = 1,
                    .align_x = ui::align_t::start,
@@ -839,7 +846,7 @@ public:
       body.children.push_back(ui::at_t{.x = 0,
                                        .y = float(i) * row_height - top,
                                        .children = {ui::box_t{.size = {int(width), int(row_height)},
-                                                              .color = chosen ? faded(t.accent, _body.focused() ? 0.42f : 0.25f) : (int(i) == _hovered ? ui::color_t{1, 1, 1, 0.045f} : clear),
+                                                              .color = long(index) == _drop_row ? faded(t.accent, 0.55f) : chosen ? faded(t.accent, _body.focused() ? 0.42f : 0.25f) : (int(i) == _hovered ? ui::color_t{1, 1, 1, 0.045f} : clear),
                                                               .align_x = ui::align_t::stretch,
                                                               .children = {std::move(cells)}}}});
     }
@@ -900,13 +907,46 @@ public:
             _scroll = (float(drag.position.y) - float(_body.bounds().y) - _grab) / (height - thumb) * limit(height);
           break;
         }
-        if (drag.phase != ui::drag_phase_t::begin)
+        // Far enough from where it was pressed, a press on a row drags the selection (G71).
+        if (drag.phase == ui::drag_phase_t::move)
+        {
+          if (_press_row >= 0 && !_dragging_out && std::hypot(drag.position.x - _press_at.x, drag.position.y - _press_at.y) > drag_distance)
+          {
+            _dragging_out = true;
+            _deferred = -1;
+            ui::emit(drag_out, _selected, scope);
+          }
           break;
+        }
+        if (drag.phase == ui::drag_phase_t::end)
+        {
+          if (_deferred >= 0 && !_dragging_out)
+            select_at(std::size_t(_deferred), scope, select_t::only);
+          if (_dragging_out && drag.dropped == vui::drop_action_t::move)
+            ui::emit(moved_out, _selected, scope);
+          _press_row = -1;
+          _deferred = -1;
+          _dragging_out = false;
+          break;
+        }
         const long at = row_at(drag.position.y);
         const auto how = how_for(drag.modifiers);
+        _press_at = drag.position;
+        _press_row = -1;
+        _deferred = -1;
+        _dragging_out = false;
         if (at >= 0 && std::size_t(at) < order().size())
         {
-          select_at(std::size_t(at), scope, how);
+          _press_row = at;
+          // A press on a row of a selection of several keeps it, so all of it can be dragged; let go
+          // without dragging, it selects that row alone, as a click does.
+          if (how == select_t::only && drag.clicks == 1 && is_selected(order()[std::size_t(at)]) && selected_indices().size() > 1)
+          {
+            _deferred = at;
+            _selected = long(order()[std::size_t(at)]);
+          }
+          else
+            select_at(std::size_t(at), scope, how);
           if (drag.clicks == 2 && how == select_t::only)
             ui::emit(activated, _selected, scope);
         }
@@ -982,6 +1022,24 @@ public:
     }
   }
 
+  // The entry in the row at `y`, window layout units, or -1 for none.
+  [[nodiscard]] long entry_at(double y) const
+  {
+    const float height = std::max(float(_body.bounds().height), row_height);
+    const long at = long(std::floor((float(y) - float(_body.bounds().y) + clamped(height)) / row_height));
+    const auto &o = order();
+    return at >= 0 && std::size_t(at) < o.size() ? long(o[std::size_t(at)]) : -1;
+  }
+  // Where a drag would drop, shown: an entry's row, `whole` for the folder itself, -1 for nowhere.
+  static constexpr long whole = -2;
+  void set_drop_row(ui::scope_t &scope, long row)
+  {
+    if (row == _drop_row)
+      return;
+    _drop_row = row;
+    ui::invalidate(scope, *this);
+  }
+
   // Where the name in the row showing `name` is, in window layout units, for the field that renames
   // it: from just after the icon to the end of the Name column. Empty when no row shows it.
   [[nodiscard]] ui::rect_t name_rect(const std::string &name) const
@@ -1023,6 +1081,8 @@ private:
   };
   static constexpr float row_height = 26;
   static constexpr int grip_width = 8;
+  // How far a pressed row moves before it is dragged, in layout units.
+  static constexpr double drag_distance = 6;
   static constexpr int min_name_width = 120;
   static constexpr int min_column_width = 48;
   static constexpr int max_column_width = 600;
@@ -1386,6 +1446,13 @@ private:
   std::array<ui::pressable_t, 4> _grips;
   std::array<float, 4> _widths{0, float(columns[1].width), float(columns[2].width), float(columns[3].width)};
   int _grip_column = -1;
+  // A press on a row, for dragging it (G71): where, on which row, a selection kept for the drag,
+  // whether the drag has begun, and where a drag over the list would drop.
+  vui::point_t _press_at;
+  long _press_row = -1;
+  long _deferred = -1;
+  bool _dragging_out = false;
+  long _drop_row = -1;
   float _grip_from = 0;
   float _grip_width = 0;
   int _sort = 0;
@@ -1573,6 +1640,15 @@ struct explorer_t
   // What a Delete is asking about: one entry or several.
   std::optional<std::vector<shell::entry_t>> confirming;
   bool confirming_permanent = false;
+
+  // Drag and drop (G71): where in Places a drop would go, shown as a line; the folders among what is
+  // dragged over Places, worked out when it comes in; and the folder a drop on the list goes to.
+  std::optional<std::size_t> place_drop_at;
+  std::vector<std::string> drop_folders;
+  std::string list_drop_into;
+  // A place or drive pressed, and where, until it is dragged far enough to drag it.
+  std::optional<std::size_t> place_pressed;
+  vui::point_t place_pressed_at;
 
   // A name being edited in place (G69): the entry's name as it was, and the text in the field.
   std::optional<std::string> renaming;
@@ -1915,14 +1991,17 @@ struct explorer_t
       say(saved.error(), true);
   }
 
-  void add_place(const std::string &folder)
+  void add_place(const std::string &folder, std::size_t at = std::size_t(-1))
   {
     if (is_in_places(folder) || places.size() >= place_buttons.size() - 4)
       return;
-    auto name = folder.substr(std::min(folder.size(), folder.find_last_of("\\/") + 1));
+    auto trimmed = folder;
+    while (trimmed.size() > 1 && (trimmed.back() == '\\' || trimmed.back() == '/') && !(trimmed.size() == 3 && trimmed[1] == ':'))
+      trimmed.pop_back();
+    auto name = trimmed.substr(std::min(trimmed.size(), trimmed.find_last_of("\\/") + 1));
     if (name.empty())
-      name = folder;
-    places.push_back({name, folder, shell::place_t::kind_t::folder});
+      name = trimmed;
+    places.insert(places.begin() + std::ptrdiff_t(std::min(at, places.size())), {name, trimmed, shell::place_t::kind_t::folder});
     keep_places();
     say("Added " + name + " to Places");
   }
@@ -2256,6 +2335,237 @@ struct explorer_t
             scope.invalidate();
           });
       });
+  }
+
+  // ---- drag and drop (G71)
+
+  // Whether `inner` is `outer` or inside it, by path; case is ignored on Windows.
+  [[nodiscard]] static bool within(std::string inner, std::string outer)
+  {
+#if defined(_WIN32)
+    for (auto *text : {&inner, &outer})
+      for (auto &c : *text)
+        c = c == '/' ? '\\' : char(std::tolower(static_cast<unsigned char>(c)));
+#endif
+    while (outer.size() > 1 && (outer.back() == '\\' || outer.back() == '/'))
+      outer.pop_back();
+    if (inner.size() < outer.size() || inner.compare(0, outer.size(), outer) != 0)
+      return false;
+    return inner.size() == outer.size() || inner[outer.size()] == '\\' || inner[outer.size()] == '/';
+  }
+
+  // What a drop of `data` into `into` does: nothing into a folder that is dragged, or inside one,
+  // nor into the folder it all came from unless Ctrl copies it there; otherwise Ctrl copies, Shift
+  // moves, and with neither it moves within a volume and copies across, as Explorer does.
+  [[nodiscard]] static vui::drop_action_t drop_action(const ui::drop_event_t &drop, const std::string &into)
+  {
+    using action_t_ = vui::drop_action_t;
+    if (!drop.data)
+      return vui::has(drop.allowed, action_t_::copy) ? action_t_::copy : action_t_::none;
+    const auto &items = drop.data->paths;
+    if (items.empty())
+      return action_t_::none;
+    bool all_here = true;
+    for (const auto &item : items)
+    {
+      if (within(into, item))
+        return action_t_::none;
+      all_here = all_here && within(shell::parent(item), into) && within(into, shell::parent(item));
+    }
+    const bool ctrl = vui::has(drop.modifiers, vui::modifier_t::control);
+    const bool shift = vui::has(drop.modifiers, vui::modifier_t::shift);
+    if (all_here && !ctrl)
+      return action_t_::none;
+    auto wanted = ctrl ? action_t_::copy : shift ? action_t_::move : (shell::same_volume(items.front(), into) ? action_t_::move : action_t_::copy);
+    if (!vui::has(drop.allowed, wanted))
+      wanted = wanted == action_t_::move && vui::has(drop.allowed, action_t_::copy) && !shift ? action_t_::copy : action_t_::none;
+    return wanted;
+  }
+
+  // Where in Places a drop at `y` goes: before the first place whose middle is below it.
+  [[nodiscard]] std::size_t place_slot(double y) const
+  {
+    for (std::size_t i = 0; i < places.size() && i < place_buttons.size(); ++i)
+    {
+      const auto b = place_buttons[i].bounds();
+      if (b.height > 0 && y < b.y + b.height / 2.0)
+        return i;
+    }
+    return places.size();
+  }
+
+  // The folders among what is dragged.
+  [[nodiscard]] static std::vector<std::string> folders_in(const ui::drop_event_t &drop)
+  {
+    std::vector<std::string> out;
+    if (!drop.data)
+      return out;
+    for (const auto &item : drop.data->paths)
+    {
+      std::error_code error;
+      if (std::filesystem::is_directory(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(item.data()), item.size())), error))
+        out.push_back(item);
+    }
+    return out;
+  }
+
+  void drop_files(const std::vector<std::string> &items, const std::string &into, bool move)
+  {
+    const auto first = items.front().substr(std::min(items.front().size(), items.front().find_last_of("\\/") + 1));
+    const auto name = into.substr(std::min(into.size(), into.find_last_of("\\/") + 1));
+    bool touches_here = within(into, path) && within(path, into);
+    for (const auto &item : items)
+      touches_here = touches_here || (move && within(shell::parent(item), path) && within(path, shell::parent(item)));
+    launch_on(jobs, [items, into, move] { return shell::transfer(items, into, move); }, (move ? "Moved " : "Copied ") + counted(items.size(), first) + " to " + (name.empty() ? into : name),
+              [this, touches_here](ui::scope_t &scope)
+              {
+                if (touches_here)
+                  go(scope, path, false);
+              });
+  }
+
+  ui::behaviour_t drag_and_drop(ui::scope_t &scope)
+  {
+    auto outs = ui::subscribe<long>(table.drag_out);
+    auto moved = ui::subscribe<long>(table.moved_out);
+    auto list_drops = ui::subscribe<ui::drop_event_t>(table.body());
+    auto place_drops = ui::subscribe<ui::drop_event_t>(sidebar_area);
+    auto place_drags = ui::subscribe<ui::drag_event_t>(place_buttons);
+    auto events = ui::merge(scope, outs, moved, list_drops, place_drops, place_drags);
+    while (auto event = co_await events)
+    {
+      switch (event->index())
+      {
+      case 0:
+      {
+        // The selection, to anywhere: a folder here, Places, or another program.
+        std::vector<std::string> items;
+        for (const auto &e : table.selected_entries())
+          items.push_back(shell::join(path, e.name));
+        if (!items.empty())
+          ui::start_drag(scope, std::move(items), vui::drop_action_t::copy | vui::drop_action_t::move | vui::drop_action_t::link);
+        break;
+      }
+      case 1:
+        // Moved into another program, which took them from here.
+        go(scope, path, false);
+        break;
+      case 2:
+      {
+        const auto &drop = std::get<2>(*event);
+        if (drop.phase == vui::drop_phase_t::leave)
+        {
+          table.set_drop_row(scope, -1);
+          break;
+        }
+        if (drop.phase == vui::drop_phase_t::drop)
+        {
+          table.set_drop_row(scope, -1);
+          const auto action = table.body().drop_answer();
+          if (drop.data && !drop.data->paths.empty() && action != vui::drop_action_t::none && !list_drop_into.empty())
+            drop_files(drop.data->paths, list_drop_into, action == vui::drop_action_t::move);
+          break;
+        }
+        // Onto a folder's row, into it; anywhere else, into the folder shown.
+        const long row = table.entry_at(drop.position.y);
+        std::string into = path;
+        long mark = file_table_t::whole;
+        if (row >= 0 && table.entries()[std::size_t(row)].directory)
+        {
+          into = shell::join(path, table.entries()[std::size_t(row)].name);
+          mark = row;
+        }
+        auto action = drop_action(drop, into);
+        if (action == vui::drop_action_t::none && mark != file_table_t::whole)
+        {
+          into = path;
+          mark = file_table_t::whole;
+          action = drop_action(drop, into);
+        }
+        list_drop_into = into;
+        table.body().accept_drop(action);
+        table.set_drop_row(scope, action == vui::drop_action_t::none ? -1 : mark);
+        break;
+      }
+      case 3:
+      {
+        // Folders onto Places add them where they are let go; one there already moves there.
+        const auto &drop = std::get<3>(*event);
+        if (drop.phase == vui::drop_phase_t::enter)
+          drop_folders = folders_in(drop);
+        if (drop.phase == vui::drop_phase_t::leave)
+        {
+          place_drop_at.reset();
+          scope.invalidate();
+          break;
+        }
+        const auto slot = place_slot(drop.position.y);
+        if (drop.phase == vui::drop_phase_t::drop)
+        {
+          place_drop_at.reset();
+          if (drop.data)
+            drop_folders = folders_in(drop);
+          auto at = slot;
+          for (const auto &folder : drop_folders)
+          {
+            const auto there = std::find_if(places.begin(), places.end(), [&](const shell::place_t &p) { return within(p.path, folder) && within(folder, p.path); });
+            if (there != places.end())
+            {
+              const auto from = std::size_t(there - places.begin());
+              auto place = *there;
+              places.erase(there);
+              if (from < at)
+                --at;
+              places.insert(places.begin() + std::ptrdiff_t(std::min(at, places.size())), std::move(place));
+              ++at;
+              keep_places();
+            }
+            else
+            {
+              add_place(folder, at);
+              ++at;
+            }
+          }
+          scope.invalidate();
+          break;
+        }
+        const bool any = !drop.data || !drop_folders.empty();
+        auto action = vui::has(drop.allowed, vui::drop_action_t::link) ? vui::drop_action_t::link : vui::drop_action_t::copy;
+        if (!any || !vui::has(drop.allowed, action))
+          action = vui::drop_action_t::none;
+        sidebar_area.accept_drop(action);
+        const auto shown = action == vui::drop_action_t::none ? std::nullopt : std::optional<std::size_t>(slot);
+        if (shown != place_drop_at)
+        {
+          place_drop_at = shown;
+          scope.invalidate();
+        }
+        break;
+      }
+      case 4:
+      {
+        // A place or a drive dragged: to another spot in Places, or a drive into them. It offers
+        // only a link, so the list never takes it -- dragging Documents out of Places must not
+        // move Documents.
+        const auto &drag = std::get<4>(*event);
+        const auto i = std::size_t(drag.source - &place_buttons[0]);
+        if (drag.phase == ui::drag_phase_t::begin)
+        {
+          place_pressed = i;
+          place_pressed_at = drag.position;
+        }
+        else if (drag.phase == ui::drag_phase_t::move && place_pressed == i && std::hypot(drag.position.x - place_pressed_at.x, drag.position.y - place_pressed_at.y) > 6)
+        {
+          place_pressed.reset();
+          const auto &p = i < places.size() ? places[i] : drives[i - places.size()];
+          ui::start_drag(scope, {p.path}, vui::drop_action_t::link);
+        }
+        else if (drag.phase == ui::drag_phase_t::end)
+          place_pressed.reset();
+        break;
+      }
+      }
+    }
   }
 
   // ---- cut, copy, paste and rename (G69)
@@ -2922,8 +3232,16 @@ struct explorer_t
                                         .children = {std::move(inside)}});
     };
     list.children.push_back(muted("Places", 11));
-    for (const auto &p : places)
-      entry(p);
+    // Where a drag of folders would put them (G71).
+    const auto drop_line = [&] { list.children.push_back(ui::box_t{.size = {0, 2}, .color = t.accent, .radius = 1, .align_x = ui::align_t::stretch}); };
+    for (std::size_t i = 0; i < places.size(); ++i)
+    {
+      if (place_drop_at == i)
+        drop_line();
+      entry(places[i]);
+    }
+    if (place_drop_at == places.size())
+      drop_line();
     list.children.push_back(ui::box_t{.size = {0, 10}, .color = clear});
     list.children.push_back(muted("Drives", 11));
     for (const auto &d : drives)
@@ -3156,6 +3474,7 @@ struct explorer_t
 
     auto presses = ui::subscribe<ui::press_event_t>(back_button, forward_button, up_button, home_button, refresh_button, pdf_previous, pdf_next);
     auto crumbs = ui::subscribe<ui::press_event_t>(crumb_buttons);
+    scope.spawn(drag_and_drop(scope));
     auto places_pressed = ui::subscribe<ui::press_event_t>(place_buttons);
     auto filters = ui::subscribe<ui::line_edit_event_t>(filter_edit.changed);
     auto toggles = ui::subscribe<ui::toggle_event_t>(hidden_box.changed);
@@ -3516,6 +3835,59 @@ vio::task_t<void> ui_test(vio::event_loop_t &loop, vui::window_t &window, std::s
     co_await ui_test_pause(loop, 200);
     check(!ex.renaming && there("renamed.txt") && !there("other.txt"), "Escape leaves the name as it was");
 
+    // Drag and drop (G71), all inside the window, through its input queue: the runtime carries a
+    // drag until it leaves the window, so nothing here reaches the system's drag and drop.
+    const auto drag = [&](vui::point_t from, vui::point_t to) -> vio::task_t<void>
+    {
+      window.impl()->on_input(vui::pointer_move_event_t{from});
+      window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, true, from});
+      for (int step = 1; step <= 3; ++step)
+        window.impl()->on_input(vui::pointer_move_event_t{{from.x + step * 4.0, from.y}});
+      co_await ui_test_pause(loop, 120);
+      for (int step = 1; step <= 6; ++step)
+        window.impl()->on_input(vui::pointer_move_event_t{{from.x + (to.x - from.x) * step / 6.0, from.y + (to.y - from.y) * step / 6.0}});
+      co_await ui_test_pause(loop, 120);
+      window.impl()->on_input(vui::pointer_move_event_t{{to.x + 1, to.y}});
+      co_await ui_test_pause(loop, 120);
+      window.impl()->on_input(vui::pointer_button_event_t{vui::button_t::left, false, {to.x + 1, to.y}});
+      co_await ui_test_pause(loop, 120);
+    };
+    const auto sub_file = [&](const char *name) { return there((std::string("sub/") + name).c_str()); };
+    co_await ui_test_pause(loop, 550);
+    // Sorted by name: sub, e.txt, f.txt, renamed.txt.
+    co_await drag(row(1), row(0));
+    for (int i = 0; i < 250 && !(sub_file("e.txt") && !there("e.txt") && ex.table.shown() == 3); ++i)
+      co_await ui_test_pause(loop, 20);
+    check(sub_file("e.txt") && !there("e.txt") && there("f.txt"), "a file dragged onto a folder moves into it, and only that file");
+    check(ex.table.shown() == 3, "and leaves the list (" + std::to_string(ex.table.shown()) + ")");
+
+    // A folder dragged onto Places is added where it is let go; a file is not.
+    co_await ui_test_pause(loop, 550);
+    const auto places_before = ex.places.size();
+    const auto slot_after = [&](std::size_t i)
+    {
+      const auto b = ex.place_buttons[i].bounds();
+      return ui_test_at(scope, b.x + 40.0, b.y + b.height + 1.0);
+    };
+    co_await drag(row(1), slot_after(places_before - 1));
+    co_await ui_test_pause(loop, 200);
+    check(ex.places.size() == places_before, "a file dropped on Places is refused");
+    co_await ui_test_pause(loop, 550);
+    co_await drag(row(0), slot_after(places_before - 1));
+    co_await ui_test_pause(loop, 200);
+    const auto sub = shell::join(folder, "sub");
+    check(ex.places.size() == places_before + 1 && ex.places.back().path == sub, "a folder dropped on Places is added there (" + (ex.places.empty() ? std::string() : ex.places.back().path) + ")");
+    // And dragged to the top of Places, it moves there.
+    co_await ui_test_pause(loop, 550);
+    {
+      const auto from = ex.place_buttons[ex.places.size() - 1].bounds();
+      const auto to = ex.place_buttons[0].bounds();
+      co_await drag(ui_test_at(scope, from.x + 40.0, from.y + from.height / 2.0), ui_test_at(scope, to.x + 40.0, to.y + 2.0));
+    }
+    co_await ui_test_pause(loop, 200);
+    check(ex.places.size() == places_before + 1 && ex.places.front().path == sub, "a place dragged to the top of Places moves there (" + (ex.places.empty() ? std::string() : ex.places.front().path) + ")");
+    check(ex.path == folder, "no press reached a place on the way: the folder shown is the same");
+
     // The Name column's edge, dragged 100 to the left, and a double click on it to fill again.
     const int before = ex.table.name_column_width();
     const auto grip = ex.table.grip_bounds(0);
@@ -3612,6 +3984,8 @@ int ui_test_main()
   for (const char *name : {"a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt"})
     std::ofstream(std::filesystem::path(folder) / name, std::ios::binary) << name;
   std::ofstream(std::filesystem::path(folder) / "sub" / "inner.txt", std::ios::binary) << "inner";
+  // Places read from and written to the test's own folder, never the user's.
+  config_override = shell::join(scratch, "settings");
   int failures = 0;
   const int code = vio::run(
     [scratch, &failures](vio::event_loop_t &loop) -> vio::task_t<int>
@@ -3932,6 +4306,7 @@ int probe_and_check()
     const auto cased = shell::rename_item(shell::join(here, "c.txt"), "C.txt");
     check(cased.has_value(), "a change of case alone is allowed" + (cased ? std::string() : ": " + cased.error()));
     check(!shell::rename_item(shell::join(here, "b.txt"), "x/y.txt"), "a name holding a separator is refused");
+    check(shell::same_volume(shell::join(here, "b.txt"), into), "a file and a folder beside it are on one volume, where a drag moves");
 #if !defined(_WIN32)
     // On Windows the clipboard is the user's; elsewhere the explorer's own, which is safe to try.
     const auto put = shell::put_on_clipboard({shell::join(here, "b.txt")}, true, nullptr);

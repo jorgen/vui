@@ -1114,3 +1114,28 @@ programs are not received there yet.
 The Win32 test makes OLE's calls on the registered target directly, with the shell's data object
 for a real file. That is everything of a drop but the mouse, which a test must never move. The drag
 out is not tested; SHDoDragDrop drops wherever the real pointer is.
+
+## G71. Drag and drop in the explorer
+
+Rows drag the selection. A press on a row that is part of a selection of several keeps the
+selection, so all of it can be dragged; let go without dragging, it selects that row alone, as a
+click does. Dragged items go anywhere: a folder in the list, Places, or another program, which on
+Windows gets the shell's own data object (G70).
+
+Dropped on a folder's row, files go into that folder; anywhere else in the list, into the folder
+shown, which is outlined. What a drop does follows Explorer. Ctrl copies, Shift moves, and with
+neither it moves within a volume and copies across one. Nothing is dropped into a folder that is
+itself dragged, or inside one, or back into the folder it all came from unless Ctrl copies it there.
+A row that cannot take a drop hands it to the folder shown. The copy or move is the same
+`shell::transfer` a paste uses (G69). A drag of ours that another program took as a move refreshes
+the list, since the items have gone from it.
+
+Folders dropped on Places are added where they are let go, with a line showing where. A folder
+already there moves there instead, which is also how a place is put in another order: drag it. A
+drive dragged into Places adds it. A dragged place offers only a link. The list never takes a
+link, so dragging Documents out of Places cannot move Documents; another program may make a
+shortcut of it. Files dropped on Places are refused.
+
+The UI test drags inside its window through the window's input queue: a file onto a folder, a
+file and a folder onto Places, and a place to the top. Its Places are kept in its own folder,
+never the user's.

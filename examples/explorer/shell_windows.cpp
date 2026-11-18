@@ -875,6 +875,14 @@ std::expected<void, std::string> transfer(const std::vector<std::string> &items,
   return run(elsewhere, 0);
 }
 
+bool same_volume(const std::string &a, const std::string &b)
+{
+  wchar_t x[MAX_PATH] = {}, y[MAX_PATH] = {};
+  if (!GetVolumePathNameW(wide(a).c_str(), x, MAX_PATH) || !GetVolumePathNameW(wide(b).c_str(), y, MAX_PATH))
+    return false;
+  return CompareStringOrdinal(x, -1, y, -1, TRUE) == CSTR_EQUAL;
+}
+
 std::expected<void, std::string> rename_item(const std::string &path, const std::string &name)
 {
   if (name.empty() || name.find_first_of("\\/:*?\"<>|") != std::string::npos)

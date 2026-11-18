@@ -196,6 +196,9 @@ std::expected<void, std::string> remove_permanently(const std::string &path);
 // overwritten. Copying into the folder something is in makes a second one beside it; moving it there
 // does nothing. A folder is never put inside itself. Waits until it is done: call it on a worker.
 std::expected<void, std::string> transfer(const std::vector<std::string> &items, const std::string &folder, bool move);
+// Whether two paths are on one volume: where a drag moves what it carries rather than copying it,
+// as Explorer and the Finder do.
+[[nodiscard]] bool same_volume(const std::string &a, const std::string &b);
 // Gives a file or folder a new name in the folder it is in. A name that is taken, or one that holds
 // a path separator, is refused; a change of case alone is allowed.
 std::expected<void, std::string> rename_item(const std::string &path, const std::string &name);

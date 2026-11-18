@@ -4,6 +4,8 @@
 
 #include "shell.h"
 
+#include <sys/stat.h>
+
 #include <filesystem>
 #include <mutex>
 #include <system_error>
@@ -105,6 +107,12 @@ std::expected<void, std::string> transfer(const std::vector<std::string> &items,
     }
   }
   return {};
+}
+
+bool same_volume(const std::string &a, const std::string &b)
+{
+  struct stat x{}, y{};
+  return ::stat(a.c_str(), &x) == 0 && ::stat(b.c_str(), &y) == 0 && x.st_dev == y.st_dev;
 }
 
 std::expected<void, std::string> rename_item(const std::string &path, const std::string &name)
