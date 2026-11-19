@@ -131,7 +131,7 @@ if(VUI_SLANGC)
 endif()
 
 if(VUI_BUILD_TESTS)
-    set(VUI_TEST_SOURCES test/test_main.cpp test/test_gui.cpp test/test_ui.cpp test/test_ui_render.cpp test/test_ui_text.cpp test/test_ui_layout.cpp test/test_ui_components.cpp test/test_ui_widgets.cpp test/test_ui_text_widgets.cpp)
+    set(VUI_TEST_SOURCES test/test_main.cpp test/test_gui.cpp test/test_ui.cpp test/test_ui_render.cpp test/test_ui_text.cpp test/test_ui_layout.cpp test/test_ui_components.cpp test/test_ui_widgets.cpp test/test_ui_text_widgets.cpp test/test_ui_canvas.cpp)
     if(WIN32)
         list(APPEND VUI_TEST_SOURCES test/test_win32.cpp)
     elseif(APPLE)

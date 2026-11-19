@@ -88,6 +88,9 @@ allow it under System Settings, Privacy & Security). Every build is on the [late
 - Rendering uses **Vulkan**, with GL as the fallback. It works from a display list with dirty
   propagation and cached layout, so unchanged parts are not drawn again. The shaders are written
   in Slang, and the SPIR-V is committed.
+- A canvas for what has too many pieces for a node each, such as a terminal's cells: rectangles on
+  whole pixels and glyphs by code point, with bold and italic faces, five underline styles and
+  fallback fonts, converted once and kept while unchanged.
 - Rows, columns and flex layout, clipping, popups, focus and keyboard navigation, icons from
   paths, images, plus a set of widgets: buttons, checkboxes, comboboxes, labels, line edits, and a
   fixed-width text edit that serves as an input pane or as a scrolling log.

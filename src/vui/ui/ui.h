@@ -702,15 +702,25 @@ struct box_t
 // ---------------------------------------------------------------------------------------------
 // Text and icons (PLAN.md, "Rendering"; G27, G39)
 
-// A loaded font: a TrueType or OpenType file, or the first face of a collection. Cheap to copy and
-// safe to share between threads; what is not (FreeType faces, the atlas) is kept per window.
+// The four faces of a family (G75). The values are bits: bold is 1, italic 2.
+enum class font_style_t : std::uint8_t
+{
+  regular = 0,
+  bold = 1,
+  italic = 2,
+  bold_italic = 3,
+};
+
+// A loaded font: a TrueType or OpenType file, or one face of a collection. Cheap to copy and safe
+// to share between threads; what is not (FreeType faces, the atlas) is kept per window.
 class font_t
 {
 public:
   font_t() = default;
 
-  static std::expected<font_t, std::string> from_file(const std::string &path);
-  static std::expected<font_t, std::string> from_memory(std::vector<std::byte> bytes);
+  // `index` picks a face of a collection (.ttc); a plain font file has only face 0.
+  static std::expected<font_t, std::string> from_file(const std::string &path, unsigned index = 0);
+  static std::expected<font_t, std::string> from_memory(std::vector<std::byte> bytes, unsigned index = 0);
   // The platform's UI font, found at a known path: Segoe UI on Windows, the system font on macOS,
   // DejaVu Sans, Noto Sans or Liberation Sans on Linux. No fontconfig lookup (G40).
   static std::expected<font_t, std::string> system_default();
@@ -719,14 +729,51 @@ public:
 
   // The vertical metrics and the advance of "0" at `size`, in logical units and unrounded. On a
   // fixed-width font the advance is every character's, which is what text_t::advance wants.
+  // The decorations' places are the font's own (post and OS/2 tables), or a share of the size where
+  // it has none: `underline_offset` is the middle of an underline below the baseline, and
+  // `strikeout_offset` the middle of a line through the text above it (G76).
   struct metrics_t
   {
     float advance = 0;
     float ascent = 0;
     float descent = 0;
     float line_gap = 0;
+    float underline_offset = 0;
+    float underline_thickness = 0;
+    float strikeout_offset = 0;
+    float strikeout_thickness = 0;
   };
   [[nodiscard]] metrics_t metrics(float size) const;
+
+  // One cell of a grid of this font at `size`, every measure a whole number of pixels at `scale`
+  // pixels per unit and given back in units (G74): what a terminal sizes its grid by. `width` is
+  // the advance rounded, `height` the ascent and descent each rounded up, as a text_t's line is,
+  // and `baseline` the ascent. The decorations are tops below the cell's top, so a paint_t line
+  // drawn at `y + underline` in a cell at `y` sits where the font puts it.
+  struct cell_metrics_t
+  {
+    float width = 0;
+    float height = 0;
+    float baseline = 0;
+    float underline = 0;
+    float underline_thickness = 0;
+    float strikeout = 0;
+    float strikeout_thickness = 0;
+  };
+  [[nodiscard]] cell_metrics_t cell_metrics(float size, float scale = 1) const;
+
+  // This font's family in `style` (G75): the face in a file beside this one -- consolab.ttf by
+  // consola.ttf, DejaVuSansMono-Bold.ttf by DejaVuSansMono.ttf -- or in the same collection, as
+  // Menlo.ttc holds all four; where there is none, this face emboldened, slanted or both by
+  // FreeType when it is drawn. Looked for once per family and kept, so asking again is cheap. A font
+  // made from memory has no folder, so every other style of it is synthetic.
+  [[nodiscard]] font_t styled(font_style_t style) const;
+  // The style this face draws in, and whether that is synthesized rather than the font's own.
+  [[nodiscard]] font_style_t style() const noexcept;
+  [[nodiscard]] bool synthetic() const noexcept;
+
+  // Whether the font has a glyph for `codepoint`, without looking further (G77).
+  [[nodiscard]] bool has_glyph(char32_t codepoint) const;
 
   explicit operator bool() const noexcept
   {
@@ -764,8 +811,11 @@ struct text_t
   // Above 0, a grid: the n-th code point starts n advances in, whatever the font says, and the text
   // is that many advances wide (G50). Ligatures are off, so column arithmetic -- a caret, a
   // selection, a slice of a long line -- is exact. Give it the font's own advance,
-  // `font.metrics(size).advance`, and a fixed-width font looks as designed.
+  // `font.metrics(size).advance`, and a fixed-width font looks as designed. A code point the font
+  // has no glyph for is drawn from a fallback font in its cell (G77).
   float advance = 0;
+  // Which face of the font's family: `font.styled(style)`, the font's own or synthesized (G75).
+  font_style_t style = font_style_t::regular;
 };
 
 // A vector shape for an icon, in a unit square with (0, 0) at the top left. Contours close
@@ -899,6 +949,126 @@ struct image_t
   float opacity = 1;
 };
 
+// How a decoration line is drawn (G76). A solid, dotted or dashed line is one thickness tall from
+// its top; a double or curly one three.
+enum class line_style_t : std::uint8_t
+{
+  solid,
+  double_line,
+  curly,
+  dotted,
+  dashed,
+};
+
+// What a canvas_t draws (G74): filled rectangles, glyphs found by code point, and decoration lines,
+// in the order they were added, in logical units from the canvas's top left. It is the way to draw
+// what has too many pieces for a node each -- a terminal's cells -- and nothing in it is laid out
+// or shaped. Every rectangle's edges and every baseline land on whole pixels, from one anchor
+// rounded for the whole canvas, so two rectangles that share an edge share the pixel boundary with
+// no seam and no overlap, and a glyph keeps its place against the cell drawn under it. A glyph is
+// the font's own glyph for its code point (cmap, no shaping), from a fallback font where the font
+// has none (G77), placed at one of four subpixel positions as text is.
+//
+// Build one, share it as a shared_ptr<const paint_t> and keep it while it is unchanged: a canvas
+// showing the same paint again reuses what it became, so a view that runs again for something else
+// costs the paint nothing.
+class paint_t
+{
+public:
+  enum class op_t : std::uint8_t
+  {
+    rect,
+    glyph,
+    line,
+  };
+  // One thing to draw. For a glyph, (x, y) is its pen on the baseline; for a line, its top left and
+  // `height` its thickness.
+  struct command_t
+  {
+    op_t op = op_t::rect;
+    line_style_t style = line_style_t::solid;
+    std::uint16_t font = 0;
+    char32_t codepoint = 0;
+    float x = 0;
+    float y = 0;
+    float width = 0;
+    float height = 0;
+    color_t color;
+  };
+  struct font_ref_t
+  {
+    font_t font;
+    float size = 0;
+  };
+
+  // A font at a size, for glyph(): its index in this paint, the same one for the same font and size.
+  std::uint16_t font(const font_t &font, float size)
+  {
+    for (std::size_t i = 0; i < _fonts.size(); ++i)
+    {
+      if (_fonts[i].font == font && _fonts[i].size == size)
+        return std::uint16_t(i);
+    }
+    _fonts.push_back({font, size});
+    return std::uint16_t(_fonts.size() - 1);
+  }
+  // A filled rectangle, its edges rounded to whole pixels. One thinner than a pixel is a pixel.
+  void rect(float x, float y, float width, float height, color_t color)
+  {
+    _commands.push_back({op_t::rect, line_style_t::solid, 0, 0, x, y, width, height, color});
+  }
+  // The glyph for `codepoint` in `font` (an index from font()), its pen at x on the baseline at y.
+  void glyph(std::uint16_t font, float x, float baseline, char32_t codepoint, color_t color)
+  {
+    _commands.push_back({op_t::glyph, line_style_t::solid, font, codepoint, x, baseline, 0, 0, color});
+  }
+  // Each code point of UTF-8 `text` as a glyph, the n-th n advances from x: a line of a grid.
+  void text(std::uint16_t font, float x, float baseline, std::string_view text, float advance, color_t color);
+  // A decoration from x to x + width with its top at y (G76): an underline, a strikethrough, an
+  // overline. Dots, dashes and waves are laid from the canvas's left edge, not from x, so a line
+  // drawn a cell at a time continues across the cells unbroken.
+  void line(line_style_t style, float x, float y, float width, float thickness, color_t color)
+  {
+    _commands.push_back({op_t::line, style, 0, 0, x, y, width, thickness, color});
+  }
+
+  void reserve(std::size_t commands)
+  {
+    _commands.reserve(commands);
+  }
+  void clear() noexcept
+  {
+    _commands.clear();
+    _fonts.clear();
+  }
+  [[nodiscard]] bool empty() const noexcept
+  {
+    return _commands.empty();
+  }
+  [[nodiscard]] std::span<const command_t> commands() const noexcept
+  {
+    return _commands;
+  }
+  [[nodiscard]] std::span<const font_ref_t> fonts() const noexcept
+  {
+    return _fonts;
+  }
+
+private:
+  std::vector<font_ref_t> _fonts;
+  std::vector<command_t> _commands;
+};
+
+// A paint_t drawn where this node is placed (G74). `size` is the room it takes in layout; what the
+// paint draws is not cut to it, so put it in a box_t{.clip = true} if it can spill. One canvas of
+// tens of thousands of cells is fine; a component whose canvas did not change is not converted
+// again, and one that keeps its paint while its view runs again for something else is not either.
+struct canvas_t
+{
+  extent_t size;
+  std::shared_ptr<const paint_t> paint;
+};
+
 // Empty space that grows: `row_t{.children = {label, ui::spacer_t{}, button}}` puts the button at
 // the far end of a row that was given more room than it needs.
 struct spacer_t
@@ -977,7 +1147,7 @@ struct mount_t
   }
 };
 
-struct node_t : std::variant<box_t, row_t, column_t, mount_t, text_t, icon_t, at_t, polyline_t, spacer_t, heatmap_t, image_t, grid_t>
+struct node_t : std::variant<box_t, row_t, column_t, mount_t, text_t, icon_t, at_t, polyline_t, spacer_t, heatmap_t, image_t, grid_t, canvas_t>
 {
   using variant::variant;
 };
@@ -1427,6 +1597,9 @@ public:
   [[nodiscard]] point_t to_logical(point_t position) const noexcept;
   // The window's size in layout units, as of the last frame.
   [[nodiscard]] extent_t viewport() const noexcept;
+  // Framebuffer pixels per layout unit, as of the last frame: what font_t::cell_metrics snaps to
+  // (G74). It changes with the window's resize_event_t::scale.
+  [[nodiscard]] float scale() const noexcept;
 
   // Pass to operations a behaviour starts, so unmounting resolves them as cancelled.
   [[nodiscard]] vio::cancellation_t *token() noexcept
@@ -1981,6 +2154,11 @@ enum class prim_kind_t : std::uint32_t
   // at and radii[2..3] its size in texels; `border_width` its corner radius in logical units;
   // `fill`'s alpha its opacity (G55).
   image = 5,
+  // A rectangle on whole pixels, filled with `fill` and not antialiased (G74): x and y a logical
+  // anchor, rounded by the shader as a coverage prim's is; radii[2..3] the pixel offset of its top
+  // left from the rounded anchor and width and height its size in pixels. A canvas's cells, so that
+  // neighbours meet on a pixel boundary exactly. Like a glyph it keeps its pixel size in a scaled run.
+  pixels = 6,
 };
 
 // One primitive: an instanced quad whose shape the fragment shader computes. Relative to the origin

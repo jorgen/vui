@@ -1172,3 +1172,104 @@ from 140 to 480 for Places and 220 to 900 for details, never leaving the list un
 click puts it back, as on the column edges. The preview is fitted to the panel's width, so it grows
 with it. The widths are kept in `panels` beside `places` in the settings folder, written as the
 edge is let go.
+
+## G74. A canvas node: a terminal's cells as paint commands, on whole pixels
+
+yat, the terminal emulator built on vui, draws its screen through the toolkit (its Y7), and no node
+fitted. A `text_t` per style run is one font and one colour, is shaped again whenever its component
+rebuilds, and counts code points rather than cells; a box per cell is layout per cell. `canvas_t`
+takes a size and a `paint_t`, a list of commands in logical units -- filled rectangles, glyphs by
+code point in a font at a size, decoration lines -- which the text engine turns into prims directly,
+with nothing laid out or shaped.
+
+- **A value, not a callback.** The alternative was a paint callback run at layout. It would run
+  user code inside layout, could be neither compared nor kept, and a test could only look at pixels
+  to see what was asked. A `shared_ptr<const paint_t>` is built in a behaviour or a view, read back
+  in a test, and known by its address.
+- **Cached by the paint.** What a paint became is kept by its address, which the pointer holds, for
+  two layouts after it was last asked for and until the atlas is emptied or the scale changes. With
+  the component cache (G29) that covers what a terminal does: when nothing changed, the component's
+  chunk is reused and nothing runs; when its view ran again for something else -- a blinking cursor
+  drawn as a canvas of its own -- and handed back the same paint, the paint is a copy. A terminal
+  that keeps a paint per row and rebuilds only damaged rows converts only those.
+- **A seventh prim kind, `pixels`.** A shape is antialiased half a pixel either side of its edge.
+  Two cells 10.95 pixels wide (7.3 units at 1.5x) each cover part of the pixel they share, and
+  blended one over the other that pixel is short of covered: a seam at every cell boundary that is
+  not on a pixel. So a canvas's rectangles are placed as glyphs are (G39): an anchor the shader
+  rounds, and edges a whole number of pixels from it, computed on the CPU, so neighbours carry the
+  same integer for the edge they share and the rasterizer covers each pixel once. A glyph then also
+  keeps its place against its cell, both being whole pixels from one anchor. Like a glyph, it keeps
+  its pixel size in a scaled mount. The GL stopgap draws them as clears. The offscreen test draws
+  thirty cells at 1.5x on a fractional origin and finds every pixel purely one cell's colour.
+- **Cells of whole pixels.** `font_t::cell_metrics(size, scale)` rounds the advance, the line (the
+  ascent and descent each rounded up, as a text's line is), the baseline and the decorations to
+  pixels at a scale, and `scope_t::scale()` gives the scale, so every cell is the same number of
+  pixels and every glyph sits at the same subpixel offset in its cell. The scale follows
+  `resize_event_t::scale`, so a component that sizes cells from it reads it again on a resize.
+
+Measured in a Debug build on Windows: a paint of 200 by 60 cells, a colour and a glyph each, became
+24,000 prims in 15 ms the first time and was copied from the cache in 0.7 ms after. Not yet: a canvas
+cut to its size (it draws where its commands say; put it in a clipping box), and damage finer than a
+paint, which converts whole.
+
+## G75. Bold and italic: the family's own faces, else FreeType's
+
+`font_t::styled(style)` gives the family's regular, bold, italic or bold italic face. It looks in
+the same collection first (Menlo.ttc holds all four), then beside the file for the names fonts ship
+under: the long form (DejaVuSansMono-Bold.ttf, LiberationMono-BoldItalic.ttf, CascadiaMonoItalic.ttf)
+and Windows' short one (consolab.ttf, consolai.ttf, consolaz.ttf, courbd.ttf). A candidate is taken
+only if the face says it is that style, by OS/2's selection bits and weight and head's macStyle, so
+a guess that names some other face is never used. No fontconfig or DirectWrite, for G40's reason; a
+terminal's monospace family is the case to cover, and its files sit together.
+
+A missing style is synthesized: a face that shares the bytes and the HarfBuzz face and carries two
+flags, which FreeType applies to every outline it loads. Italic is FreeType's own oblique shear,
+about 12 degrees. Bold widens by a twentieth of the size, at least two thirds of a pixel, and only
+sideways, so a bold cell keeps the line's height and reaches into no other row. A bold italic is made
+from the real italic, or the real bold, where only one exists. Being a face of its own, a synthetic
+one has its own atlas entries. HarfBuzz is not told, so advances stay as they were, which is what a
+grid wants.
+
+Faces are looked for once per family and kept by the face first asked; the faces it made point back
+to it weakly, so nothing holds itself. `text_t::style` and a paint's fonts both use them. Seen in
+`vui_ui_cells`: Consolas finds its three files; Lucida Console, which has none, draws synthetic bold,
+italic and bold italic. Not done: a variable font's weight axis -- Cascadia Mono is one file with a
+weight axis, and its bold here is synthetic.
+
+## G76. Decorations are pixel rectangles and a wave, laid from the canvas's edge
+
+`paint_t::line` draws an underline, a strikethrough or an overline in five styles. Solid, double,
+dotted and dashed are pixels prims, as crisp as the cells under them. Curly is a zigzag of the
+mitred segments a polyline is drawn with (`append_line_segments`, which `polyline_t` now shares)
+between the line's first and third thickness. Dots, dashes and the wave's peaks are placed from the
+canvas's left edge rather than from the line's start: a terminal draws decorations a cell at a time,
+and a pattern that started again in every cell would stutter.
+
+Where a line goes is the font's: `metrics_t` gained the underline's offset and thickness from the
+post table, which HarfBuzz hands over as the line's middle, as FreeType reads it, and the strikeout's
+from OS/2, which gives the stroke's top. A font without them gets a fourteenth of the em and places
+from its descent and ascent. `cell_metrics` rounds them into the cell. A `text_t` has no decorations
+of its own yet.
+
+## G77. Fallback fonts: a short list per platform, asked per code point
+
+A code point the font has no glyph for is drawn from the first font of a list that has one. On
+Windows: Segoe UI Symbol, Segoe UI Emoji (its monochrome glyphs), Segoe UI, Microsoft YaHei, Yu
+Gothic, MS Gothic, Malgun Gothic, SimSun, Nirmala UI, Segoe UI Historic, Ebrima, Cambria and Arial.
+On Linux: DejaVu Sans, Noto Sans with its symbols, maths and CJK faces, Droid Sans Fallback, Symbola,
+FreeSerif and Unifont, in whichever of the usual folders the distribution keeps them. On macOS, not
+yet run: Apple Symbols, Arial Unicode, PingFang, Hiragino, Apple SD Gothic Neo, STHeiti, STIX and
+Geneva. They are paths, as G40 finds the default fonts, not a fontconfig query. Each file is loaded
+when a code point first gets past the fonts before it, and kept for the life of the process, since a
+`font_t` is shareable and a CJK file is tens of megabytes.
+
+Each engine remembers per font and code point which font and glyph answered. A styled font falls
+back to the fallback font in the same style (through G75, usually synthetic), so a bold cell stays
+bold. A canvas glyph and a grid `text_t` use it -- a grid cell is a code point of its own, so its
+glyph can be swapped; a shaped `text_t` does not, since that needs the text split into runs by font
+before it is shaped. Where nothing has the code point, the font's own .notdef is drawn.
+
+Colour glyphs stay out: the glyph atlas is one channel. FreeType is built here without PNG, so Noto
+Color Emoji's bitmaps cannot be read at all; Segoe UI Emoji's COLR layers could be blended by
+FreeType into the image atlas (G55) and drawn as image prims, which is the next step and is not
+done.

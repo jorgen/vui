@@ -257,6 +257,28 @@ take a scope. What the runtime gained for them: `box_t::clip`, a grid mode on `t
 wheel and ordered `typing_event_t` input on pressables, `pressable_t::bounds()`, and
 `ui::invalidate(scope, component)`. `examples/ui_text.cpp` shows them together.
 
+### Cells
+
+A terminal's screen, for yat (G74-G77): too many pieces for a node each, and no shaping wanted.
+`canvas_t` draws a `paint_t`, a value-type list of commands in logical units: filled rectangles,
+glyphs by code point in a font at a size, and decoration lines. Every edge and baseline lands on a
+whole pixel from one anchor, so cells meet with no seam, and a paint is converted once and copied
+while it is unchanged, so a view that runs again for a blinking cursor costs the grid nothing.
+
+```cpp
+auto paint = std::make_shared<ui::paint_t>();
+const auto cell = font.cell_metrics(15, scope.scale());
+const auto bold = paint->font(font.styled(ui::font_style_t::bold), 15);
+paint->rect(x, y, cell.width, cell.height, background);
+paint->glyph(bold, x, y + cell.baseline, U'A', foreground);
+paint->line(ui::line_style_t::curly, x, y + cell.underline, cell.width, cell.underline_thickness, red);
+// in view(): ui::canvas_t{size, paint}
+```
+
+`font_t::styled` finds a family's bold and italic files, or synthesizes them (G75);
+`cell_metrics` gives a cell of whole pixels with the font's own decoration places (G74, G76); a
+code point the font lacks comes from a short list of system fonts (G77).
+
 ### Two trees
 
 - The **component tree** is retained. `ui::run` owns the root, children are members of their
@@ -416,8 +438,9 @@ shape is computed per pixel: a rounded rectangle with per-corner radii and a bor
 one, which is a shadow (G37); a circle is a shape whose radii are half its size. Antialiasing is
 half a pixel either side of the exact distance; no MSAA. Coverage -- a glyph or an icon -- is a
 rectangle of the atlas copied texel for texel and tinted (G39). A segment is a line with round ends,
-by its distance; an area is the region under one (G41). Colours are authored in sRGB and blended in
-linear space (G38). Still to come: arcs in the same pipeline, and phase 11's point-buffer line
+by its distance; an area is the region under one (G41). A pixels prim is a solid rectangle placed as
+a glyph is, whole pixels from a rounded anchor, for a canvas's cells (G74). Colours are authored in
+sRGB and blended in linear space (G38). Still to come: arcs in the same pipeline, and phase 11's point-buffer line
 pipeline with joins that do not overlap (G28).
 
 **Text** (G27, G39, G40). `text_t` is one line in one `font_t` at a size in logical units; a
@@ -434,7 +457,7 @@ so only for changed subtrees. Text with no font named uses `run_config_t::font`,
 HarfBuzz. A text reports its baseline, a whole number of pixels below its anchor, which is what a
 row aligned on baselines lines up. `tight` measures a text by its ink rather than its line, for a
 symbol centred on a button (G41). Not yet: bidirectional text, font fallback, wrapping, colour
-glyphs -- G40.
+glyphs -- G40. A grid `text_t` and a canvas do fall back, per code point (G77).
 
 **Plots** (G28, G41, G44): `polyline_t` is a line through points in a box of a given size, mitred at
 its joints (round past a mitre limit of 4, and at its ends), with an optional fill down to the box's
@@ -532,6 +555,7 @@ Open:
 | 11 | Plots: polylines with joins, mesh pipeline, markers, heatmaps, M4 decimation. **In on Windows** (G41, G44); no mesh pipeline | thick translucent zigzag lines; a million-point series panned at frame rate |
 | 12 | D3D12 and Metal backends. **On hold** | the phase 9 to 11 examples on each |
 | -- | Widgets: `button_t`, `checkbox_t`, `combobox_t`; keyboard focus; popups. **In on Windows** (G46) | `vui_ui_widgets`; `test/test_ui_widgets.cpp` |
+| -- | Cells for yat: `canvas_t` and the `pixels` prim, bold and italic faces, decorations, font fallback. **In on Windows** (G74-G77) | `test/test_ui_canvas.cpp` |
 | -- | Stress test: Qt's chip demo five times over, 200,000 movable, editable chips (`vui_ui_chips`). **Holds at 60 fps on Windows** (G45) | `vui_ui_chips --bench` |
 
 ## Stress test

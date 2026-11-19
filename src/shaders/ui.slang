@@ -4,7 +4,8 @@
 // glyphs and icons -- is read from the atlas texel for texel, one texel per pixel. A segment is a
 // line, by its distance, mitred against its neighbours or round at its ends; an area is the region
 // under one, for a filled plot (G41, G44); a heatmap is a grid of atlas values through viridis; an
-// image is the image atlas sampled bilinearly, with rounded corners if asked (G55).
+// image is the image atlas sampled bilinearly, with rounded corners if asked (G55); a pixels prim is
+// a solid rectangle on whole pixels from a rounded anchor, as coverage is placed (G74).
 //
 // The compiled SPIR-V is committed as ui_spirv.h (G25); `cmake --build <dir> --target
 // vui_shaders` regenerates it, and needs slangc only then. The interface below -- attribute
@@ -18,7 +19,7 @@ struct Prim
     [[vk::location(2)]] float4 fill : FILL;          // sRGB, straight alpha
     [[vk::location(3)]] float4 border_color : BORDER;
     [[vk::location(4)]] float2 params : PARAMS;      // border width, blur sigma
-    [[vk::location(5)]] uint kind : KIND;            // 0 shape, 1 coverage, 2 segment, 3 area, 4 heatmap, 5 image (prim_kind_t)
+    [[vk::location(5)]] uint kind : KIND;            // 0 shape, 1 coverage, 2 segment, 3 area, 4 heatmap, 5 image, 6 pixels (prim_kind_t)
 };
 
 struct Push
@@ -82,11 +83,12 @@ Varyings vertexMain(Prim prim, uint vertex : SV_VulkanVertexID)
 
     const float2 scale = push.scale;
     Varyings out;
-    if (prim.kind == 1)
+    if (prim.kind == 1 || prim.kind == 6)
     {
         // Coverage: the anchor on a whole pixel, the rectangle at its offset from it, one texel per
         // pixel. Rounding the shared anchor rather than each glyph keeps the spacing.
-        // A glyph keeps its pixel size in a scaled run; only its anchor moves (G45).
+        // A glyph keeps its pixel size in a scaled run; only its anchor moves (G45). A pixels prim is
+        // placed the same way and filled solid, so its edges are whole pixels (G74).
         const float2 anchor = floor(at(prim.rect.xy) + 0.5);
         const float2 top_left = anchor + prim.radii.zw;
         out.position = float4((top_left + corner * prim.rect.zw) / push.target * 2.0 - 1.0, 0.0, 1.0);
@@ -95,7 +97,7 @@ Varyings vertexMain(Prim prim, uint vertex : SV_VulkanVertexID)
         out.fill = premultiplied_linear(prim.fill);
         out.border = float4(0.0);
         out.params = float2(0.0);
-        out.glyph = float4(prim.radii.xy - top_left, 1.0, 0.0);
+        out.glyph = float4(prim.radii.xy - top_left, float(prim.kind), 0.0);
         return out;
     }
     if (prim.kind == 2)
@@ -241,7 +243,12 @@ float erf_approx(float x)
 float4 fragmentMain(Varyings v) : SV_Target
 {
     float4 color;
-    if (v.glyph.z > 4.5)
+    if (v.glyph.z > 5.5)
+    {
+        // Pixels: the rasterizer's own edges are whole pixels, so every covered pixel is wholly in.
+        color = v.fill;
+    }
+    else if (v.glyph.z > 4.5)
     {
         // The texel this pixel's centre maps to, kept half a texel inside the image so the filter
         // reads its own border and never a neighbour's.

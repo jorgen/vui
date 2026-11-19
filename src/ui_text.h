@@ -27,6 +27,7 @@ Copyright (c) 2026 Jørgen Lind
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -71,6 +72,21 @@ public:
   // An image's pixels, in the image atlas -- uploaded when its data or version is new -- and the
   // prim that draws them (G55).
   void add_image(const image_t &image, float x, float y, std::vector<prim_t> &out);
+  // A canvas's paint as prims anchored at (x, y) (G74). What a paint became is kept, by the paint's
+  // address, until a layout or two passes without it, so the same paint shown again is a copy.
+  void add_canvas(const canvas_t &canvas, float x, float y, std::vector<prim_t> &out);
+  // A layout is starting: what no layout has used for a while is let go.
+  void begin_layout();
+
+  // The glyph `codepoint` is drawn with: in `font` if it has one, else in the first fallback font
+  // that does, in the same style (G77); null font and glyph 0 when none has it. Remembered per font
+  // and code point.
+  struct resolved_t
+  {
+    const font_t *font = nullptr;
+    std::uint32_t glyph = 0;
+  };
+  resolved_t resolve(const font_t &font, char32_t codepoint);
 
   // True once after the atlas filled at its largest size and was emptied: prims made before that
   // name rectangles that are gone, so the caller lays everything out again.
@@ -85,7 +101,21 @@ public:
   static std::uint32_t nominal_glyph(const font_t &font, char32_t codepoint);
 
 private:
+  void paint_prims(const paint_t &paint, std::vector<prim_t> &out);
+
   struct impl_t;
   std::unique_ptr<impl_t> _impl;
 };
+
+// The code point at `i` of UTF-8 `text`, stepping past it; U+FFFD for a malformed byte.
+char32_t next_code_point(std::string_view text, std::size_t &i) noexcept;
+
+// The fonts searched, in order, for a code point the font in use has no glyph for (G77): a short
+// list of system fonts per platform, each loaded the first time it is needed and kept for the life
+// of the process. Thread-safe.
+const font_t *fallback_font(std::size_t index);
+
+// A line through `points`, offset by (x, y), as mitred segment prims (G44). In ui.cpp; a canvas's
+// curly lines use it too.
+void append_line_segments(std::span<const vec2_t> points, float x, float y, float width, color_t color, std::vector<prim_t> &out);
 } // namespace vui::ui::detail
