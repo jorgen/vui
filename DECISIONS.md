@@ -1273,3 +1273,25 @@ Colour glyphs stay out: the glyph atlas is one channel. FreeType is built here w
 Color Emoji's bitmaps cannot be read at all; Segoe UI Emoji's COLR layers could be blended by
 FreeType into the image atlas (G55) and drawn as image prims, which is the next step and is not
 done.
+
+## G78. Raw input for a terminal: Tab kept, and every mouse button
+
+`pressable_t{ui::raw_input}` is a text input to which Tab and Shift+Tab are keys like any other: the
+keyboard cannot move focus away from it, only a press elsewhere or `request_focus` can. The focused
+pressable already got every key before focus moved (G46), so keeping Tab is only not moving focus
+afterwards. Keys already carry what a terminal encodes -- key, scancode, modifiers and repeat, with
+typed text in order through `typing_event_t` -- so nothing else changed for the keyboard.
+
+`mouse_event_t` is every button, pressed and released, raw. The toolkit made presses and drags of
+the left button, a context event of the right button's press and navigation of back and forward,
+and dropped the middle button and every other release, which a terminal must report. A press now
+also goes, as a mouse event, to the topmost pressable under the pointer with a mouse subscriber, and
+that pressable has the pointer until its last button is up: releases, other buttons and moves go to
+it wherever the pointer is, as an X11 grab does, so a press dragged out of the window still ends
+where it began. With no button down, moves go to the subscriber under the pointer, which is what
+xterm's any-event tracking reports. `held` gives the buttons down after the event. The wheel already
+had modifiers and a position.
+
+It comes besides the other events, not instead of them. A terminal selects with the left button's
+drag when the program in it has not asked for the mouse, and reports the mouse when it has, and only
+the terminal knows which, per event; a pressable that subscribes to both picks.

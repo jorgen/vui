@@ -277,7 +277,10 @@ paint->line(ui::line_style_t::curly, x, y + cell.underline, cell.width, cell.und
 
 `font_t::styled` finds a family's bold and italic files, or synthesizes them (G75);
 `cell_metrics` gives a cell of whole pixels with the font's own decoration places (G74, G76); a
-code point the font lacks comes from a short list of system fonts (G77).
+code point the font lacks comes from a short list of system fonts (G77). For its input a terminal
+takes `pressable_t{ui::raw_input}`, which keeps Tab, and `mouse_event_t`, every button pressed and
+released on the pressable that took it (G78). `examples/ui_cells.cpp` draws a styled grid with all of
+it.
 
 ### Two trees
 
@@ -555,7 +558,7 @@ Open:
 | 11 | Plots: polylines with joins, mesh pipeline, markers, heatmaps, M4 decimation. **In on Windows** (G41, G44); no mesh pipeline | thick translucent zigzag lines; a million-point series panned at frame rate |
 | 12 | D3D12 and Metal backends. **On hold** | the phase 9 to 11 examples on each |
 | -- | Widgets: `button_t`, `checkbox_t`, `combobox_t`; keyboard focus; popups. **In on Windows** (G46) | `vui_ui_widgets`; `test/test_ui_widgets.cpp` |
-| -- | Cells for yat: `canvas_t` and the `pixels` prim, bold and italic faces, decorations, font fallback. **In on Windows** (G74-G77) | `test/test_ui_canvas.cpp` |
+| -- | Cells for yat: `canvas_t` and the `pixels` prim, bold and italic faces, decorations, font fallback, raw keys and mouse. **In on Windows** (G74-G78) | `vui_ui_cells`; `test/test_ui_canvas.cpp`, `test/test_ui_widgets.cpp` |
 | -- | Stress test: Qt's chip demo five times over, 200,000 movable, editable chips (`vui_ui_chips`). **Holds at 60 fps on Windows** (G45) | `vui_ui_chips --bench` |
 
 ## Stress test

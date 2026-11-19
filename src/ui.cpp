@@ -554,6 +554,7 @@ public:
     hover(_pointer);
     if (_hovered)
       hovering(_hovered, true);
+    mouse_moved(_pointer, modifiers);
     if (_drag)
     {
       dragging(modifiers);
@@ -859,6 +860,7 @@ public:
   }
   void button(const pointer_button_event_t &event)
   {
+    mouse_button(event);
     if (event.button == button_t::right && event.pressed)
     {
       context(to_logical(event.position), event.modifiers);
@@ -929,6 +931,82 @@ public:
     }
   }
 
+  // ---- every mouse button, raw (G78). A press goes to the topmost pressable under the pointer with
+  // a mouse subscriber, which then has the pointer until its last button is up: releases and moves
+  // go to it wherever the pointer is, as an X11 grab does. Kept inside a popup, as presses are.
+  [[nodiscard]] const pressable_t *mouse_target_at(point_t position) const noexcept
+  {
+    std::size_t floor = 0;
+    bool landed = false;
+    for (std::size_t i = _items.size(); i-- > floor;)
+    {
+      const auto &item = _items[i];
+      const auto *source = item.box->events.source;
+      if (!source || !item.rect.contains(position))
+        continue;
+      if (static_cast<const detail::source_t<mouse_event_t> &>(*source).subscribed())
+        return source;
+      if (!landed)
+      {
+        landed = true;
+        for (const auto &[first, last] : _popup_items)
+        {
+          if (i >= first && i < last)
+            floor = first;
+        }
+      }
+    }
+    return nullptr;
+  }
+
+  void emit_mouse(const pressable_t *target, mouse_phase_t phase, button_t which, point_t position, modifier_t modifiers)
+  {
+    auto &mice = static_cast<detail::source_t<mouse_event_t> &>(*const_cast<pressable_t *>(target));
+    mice.emit(mouse_event_t{target, phase, which, position, modifiers, _mouse_held}, *this);
+  }
+
+  void mouse_button(const pointer_button_event_t &event)
+  {
+    const auto position = to_logical(event.position);
+    const auto bit = std::uint8_t(1u << unsigned(event.button));
+    if (event.pressed)
+    {
+      const auto *target = _mouse_capture && _mouse_held != 0 ? _mouse_capture : mouse_target_at(position);
+      if (!target)
+        return;
+      _mouse_capture = target;
+      _mouse_held = std::uint8_t(_mouse_held | bit);
+      emit_mouse(target, mouse_phase_t::press, event.button, position, event.modifiers);
+      return;
+    }
+    if (!_mouse_capture || (_mouse_held & bit) == 0)
+      return;
+    _mouse_held = std::uint8_t(_mouse_held & ~bit);
+    const auto *target = _mouse_capture;
+    if (_mouse_held == 0)
+      _mouse_capture = nullptr;
+    if (shown(target))
+      emit_mouse(target, mouse_phase_t::release, event.button, position, event.modifiers);
+  }
+
+  void mouse_moved(point_t position, modifier_t modifiers)
+  {
+    const pressable_t *target = nullptr;
+    if (_mouse_capture && _mouse_held != 0)
+      target = shown(_mouse_capture) ? _mouse_capture : nullptr;
+    else
+      target = mouse_target_at(position);
+    if (!target)
+      return;
+    button_t first = button_t::other;
+    for (const auto which : {button_t::left, button_t::middle, button_t::right, button_t::back, button_t::forward})
+    {
+      if (first == button_t::other && (_mouse_held & (1u << unsigned(which))) != 0)
+        first = which;
+    }
+    emit_mouse(target, mouse_phase_t::move, first, position, modifiers);
+  }
+
   // ---- the keyboard (G46). Every key goes to the focused pressable; Tab then moves focus, and
   // Space presses it -- held while down, pressed on release.
   void key(const key_event_t &event)
@@ -944,7 +1022,8 @@ public:
       if (_focused && _focused->text_input())
         typing(typing_event_t{event});
     }
-    if (event.pressed && event.key == vui::key_t::tab)
+    // A raw input keeps Tab (G78): the keyboard does not move focus away from it.
+    if (event.pressed && event.key == vui::key_t::tab && !(_focused && _focused->raw_input()))
     {
       move_focus(has(event.modifiers, modifier_t::shift));
       return;
@@ -1037,6 +1116,8 @@ public:
     _focused = nullptr;
     _focus_request = nullptr;
     _held = {};
+    _mouse_capture = nullptr;
+    _mouse_held = 0;
     _drag.reset();
     _drop_target = nullptr;
     for (auto *slot : leaving)
@@ -2160,6 +2241,9 @@ private:
   point_t _click_at;
   int _clicks = 1;
   std::uint64_t _bounds_frame = 0;
+  // The pressable that has the pointer for its mouse events, and the buttons down on it (G78).
+  const pressable_t *_mouse_capture = nullptr;
+  std::uint8_t _mouse_held = 0;
 
   // A drag begun by ui::start_drag (G70), and what it is over. `handed_off` once the window system
   // carries it; `refused_off` when it could not, so the edge is not offered it again and again.

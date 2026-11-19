@@ -238,6 +238,32 @@ struct navigate_event_t
   modifier_t modifiers = modifier_t::none;
 };
 
+// Every mouse button on a pressable, raw (G78): what a terminal reports to the program in it. A
+// press of any button goes to the topmost pressable under the pointer that something subscribes to
+// mouse events on, and that pressable then has the pointer: the button's release goes to it wherever
+// the pointer is, and so does every move while a button it took is down. With no button down, a move
+// goes to the subscriber under the pointer. `held` is the buttons down after the event, a bit per
+// button_t (`1 << int(button_t::middle)`); on a move `button` is the first of them, or `other` when
+// none is. This comes besides what the buttons do otherwise -- a left press still presses, drags
+// and focuses, a right press still opens a context menu -- so a pressable takes what it wants.
+// Positions are window layout units.
+enum class mouse_phase_t : std::uint8_t
+{
+  press,
+  release,
+  move,
+};
+
+struct mouse_event_t
+{
+  const pressable_t *source = nullptr;
+  mouse_phase_t phase = mouse_phase_t::press;
+  button_t button = button_t::left;
+  point_t position;
+  modifier_t modifiers = modifier_t::none;
+  std::uint8_t held = 0;
+};
+
 // Something dragged over a pressable (G70): files from another program, or what ui::start_drag
 // began in this window. It goes to the topmost pressable under the pointer that something
 // subscribes to drops on: `enter` when the drag comes onto it, `over` as it moves there, and then
@@ -433,6 +459,14 @@ struct text_input_t
 };
 inline constexpr text_input_t text_input{};
 
+// `ui::pressable_t terminal{ui::raw_input}`: a text input that keeps every key (G78). Tab and
+// Shift+Tab reach it and do not move focus, so the keyboard cannot take focus away from it; only a
+// press elsewhere or ui::request_focus can.
+struct raw_input_t
+{
+};
+inline constexpr raw_input_t raw_input{};
+
 // Something that can be pressed. It is a member of a component and its identity is its address, so
 // the box that shows it may be rebuilt freely. It also carries what the pointer is doing to it, for a
 // view to draw.
@@ -441,7 +475,7 @@ inline constexpr text_input_t text_input{};
 // focusable boxes in the order they are drawn. The focused one is sent every key, as a source of
 // key_event_t -- `ui::subscribe<key_event_t>(field)` -- and Space presses it, so whatever a press
 // does the keyboard does too. A text input is also sent keys and the window's typed text together,
-// in order, as typing_event_t (G50).
+// in order, as typing_event_t (G50); a raw input keeps Tab as well (G78).
 class pressable_t : public detail::source_t<press_event_t>,
                     public detail::source_t<key_event_t>,
                     public detail::source_t<typing_event_t>,
@@ -450,7 +484,8 @@ class pressable_t : public detail::source_t<press_event_t>,
                     public detail::source_t<hover_event_t>,
                     public detail::source_t<context_event_t>,
                     public detail::source_t<navigate_event_t>,
-                    public detail::source_t<drop_event_t>
+                    public detail::source_t<drop_event_t>,
+                    public detail::source_t<mouse_event_t>
 {
   using presses_t = detail::source_t<press_event_t>;
   using keys_t = detail::source_t<key_event_t>;
@@ -461,6 +496,7 @@ class pressable_t : public detail::source_t<press_event_t>,
   using contexts_t = detail::source_t<context_event_t>;
   using navigates_t = detail::source_t<navigate_event_t>;
   using drops_t = detail::source_t<drop_event_t>;
+  using mice_t = detail::source_t<mouse_event_t>;
 
 public:
   pressable_t() = default;
@@ -473,6 +509,12 @@ public:
     , _text_input(true)
   {
   }
+  explicit pressable_t(raw_input_t) noexcept
+    : _focusable(true)
+    , _text_input(true)
+    , _raw_input(true)
+  {
+  }
   pressable_t(pressable_t &&other) noexcept
     : presses_t(std::move(other))
     , keys_t(std::move(other))
@@ -483,8 +525,10 @@ public:
     , contexts_t(std::move(other))
     , navigates_t(std::move(other))
     , drops_t(std::move(other))
+    , mice_t(std::move(other))
     , _focusable(other._focusable)
     , _text_input(other._text_input)
+    , _raw_input(other._raw_input)
   {
   }
   pressable_t &operator=(pressable_t &&other) noexcept
@@ -498,8 +542,10 @@ public:
     contexts_t::operator=(std::move(other));
     navigates_t::operator=(std::move(other));
     drops_t::operator=(std::move(other));
+    mice_t::operator=(std::move(other));
     _focusable = other._focusable;
     _text_input = other._text_input;
+    _raw_input = other._raw_input;
     return *this;
   }
 
@@ -521,6 +567,11 @@ public:
   [[nodiscard]] bool text_input() const noexcept
   {
     return _text_input;
+  }
+  // It keeps Tab and Shift+Tab (G78).
+  [[nodiscard]] bool raw_input() const noexcept
+  {
+    return _raw_input;
   }
   // It has keyboard focus.
   [[nodiscard]] bool focused() const noexcept
@@ -562,6 +613,7 @@ private:
   friend class detail::runtime_t;
   bool _focusable = false;
   bool _text_input = false;
+  bool _raw_input = false;
   bool _hovered = false;
   bool _held = false;
   bool _focused = false;

@@ -174,6 +174,144 @@ TEST_CASE("ui focus: Tab walks the focusable boxes in drawing order, and Space p
         });
 }
 
+TEST_CASE("ui raw input: keeps Tab and Shift+Tab, in order with its text, and focus stays on it")
+{
+  struct root_t
+  {
+    ui::pressable_t terminal{ui::raw_input}, other{ui::focusable};
+    std::vector<std::string> typed;
+
+    ui::node_t view() const
+    {
+      return ui::row_t{.children = {ui::box_t{.size = {80, 40}, .events = terminal}, ui::box_t{.size = {40, 40}, .events = other}}};
+    }
+    ui::behaviour_t behave(ui::scope_t &)
+    {
+      auto typing = ui::subscribe<ui::typing_event_t>(terminal);
+      while (auto event = co_await typing)
+      {
+        if (const auto *k = std::get_if<vui::key_event_t>(&event->input))
+        {
+          if (k->pressed)
+            typed.push_back(k->key == vui::key_t::tab ? (has(k->modifiers, vui::modifier_t::shift) ? "S-tab" : "tab") : "key");
+        }
+        else
+          typed.push_back(std::get<vui::text_event_t>(event->input).text);
+      }
+    }
+  } root;
+  std::vector<seen_t> seen;
+  drive(root, seen,
+        [&root, &seen](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          CHECK(root.terminal.raw_input());
+          CHECK(root.terminal.text_input());
+          click(window, centre(rect_of(seen, &root.terminal)));
+          co_await settle(loop);
+          REQUIRE(root.terminal.focused());
+          key(window, vui::key_t::tab);
+          window.impl()->on_input(vui::text_event_t{"x"});
+          key(window, vui::key_t::tab, vui::modifier_t::shift);
+          co_await settle(loop);
+          CHECK(root.terminal.focused());
+          CHECK_FALSE(root.other.focused());
+          CHECK(root.typed == std::vector<std::string>{"tab", "x", "S-tab"});
+          // A press elsewhere still takes focus from it.
+          click(window, centre(rect_of(seen, &root.other)));
+          co_await settle(loop);
+          CHECK(root.other.focused());
+        });
+}
+
+TEST_CASE("ui raw input: every mouse button is pressed and released on the pressable that took it")
+{
+  struct root_t
+  {
+    ui::pressable_t terminal, beside;
+    std::vector<ui::mouse_event_t> events;
+    int contexts = 0;
+    int navigates = 0;
+
+    ui::node_t view() const
+    {
+      return ui::row_t{.children = {ui::box_t{.size = {80, 40}, .events = terminal}, ui::box_t{.size = {80, 40}, .events = beside}}};
+    }
+    ui::behaviour_t behave(ui::scope_t &scope)
+    {
+      scope.spawn(others(scope));
+      auto mice = ui::subscribe<ui::mouse_event_t>(terminal);
+      while (auto event = co_await mice)
+        events.push_back(*event);
+    }
+    ui::behaviour_t others(ui::scope_t &scope)
+    {
+      auto contexts_seen = ui::subscribe<ui::context_event_t>(terminal);
+      auto navigates_seen = ui::subscribe<ui::navigate_event_t>(terminal);
+      auto both = ui::merge(scope, contexts_seen, navigates_seen);
+      while (auto event = co_await both)
+        ++(event->index() == 0 ? contexts : navigates);
+    }
+  } root;
+  std::vector<seen_t> seen;
+  drive(root, seen,
+        [&root, &seen](vio::event_loop_t &loop, vui::window_t &window) -> vio::task_t<void>
+        {
+          const auto on = centre(rect_of(seen, &root.terminal));
+          const auto off = centre(rect_of(seen, &root.beside));
+          auto *impl = window.impl();
+          using vui::button_t;
+          impl->on_input(vui::pointer_move_event_t{on});
+          co_await settle(loop);
+          impl->on_input(vui::pointer_button_event_t{button_t::middle, true, on, vui::modifier_t::control});
+          co_await settle(loop);
+          // Dragged off with the middle button down, the moves and the right button stay with it.
+          impl->on_input(vui::pointer_move_event_t{off});
+          co_await settle(loop);
+          impl->on_input(vui::pointer_button_event_t{button_t::right, true, off});
+          impl->on_input(vui::pointer_button_event_t{button_t::middle, false, off});
+          impl->on_input(vui::pointer_button_event_t{button_t::right, false, off});
+          co_await settle(loop);
+          // With nothing down, a move off it is not its; a move over it is, and a back button too.
+          impl->on_input(vui::pointer_move_event_t{{off.x + 5, off.y}});
+          co_await settle(loop);
+          impl->on_input(vui::pointer_move_event_t{on});
+          co_await settle(loop);
+          impl->on_input(vui::pointer_button_event_t{button_t::back, true, on});
+          impl->on_input(vui::pointer_button_event_t{button_t::back, false, on});
+          co_await settle(loop);
+        });
+  const auto bit = [](vui::button_t b) { return std::uint8_t(1u << unsigned(b)); };
+  using phase = ui::mouse_phase_t;
+  const auto &e = root.events;
+  REQUIRE(e.size() == 9);
+  // The first move, over it with nothing down.
+  CHECK(e[0].phase == phase::move);
+  CHECK(e[0].held == 0);
+  CHECK(e[0].button == vui::button_t::other);
+  CHECK(e[1].phase == phase::press);
+  CHECK(e[1].button == vui::button_t::middle);
+  CHECK(e[1].held == bit(vui::button_t::middle));
+  CHECK(e[1].modifiers == vui::modifier_t::control);
+  CHECK(e[2].phase == phase::move);
+  CHECK(e[2].button == vui::button_t::middle);
+  CHECK(e[2].position.x > 80);
+  CHECK(e[3].phase == phase::press);
+  CHECK(e[3].button == vui::button_t::right);
+  CHECK(e[3].held == (bit(vui::button_t::middle) | bit(vui::button_t::right)));
+  CHECK(e[4].phase == phase::release);
+  CHECK(e[4].button == vui::button_t::middle);
+  CHECK(e[5].phase == phase::release);
+  CHECK(e[5].button == vui::button_t::right);
+  CHECK(e[5].held == 0);
+  CHECK(e[6].phase == phase::move);
+  CHECK(e[7].phase == phase::press);
+  CHECK(e[7].button == vui::button_t::back);
+  CHECK(e[8].phase == phase::release);
+  // The right press off it opened no context menu on it; the back button still navigates.
+  CHECK(root.contexts == 0);
+  CHECK(root.navigates == 1);
+}
+
 TEST_CASE("ui popup: takes no room, is drawn last and kept in the window, and a press outside it dismisses")
 {
   struct menu_t
