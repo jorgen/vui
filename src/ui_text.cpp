@@ -126,14 +126,20 @@ std::expected<std::shared_ptr<font_data_t>, std::string> make_data(std::shared_p
   return data;
 }
 
+// A whole file in one read: a fallback CJK font is tens of megabytes, and reading it a character at
+// a time through a stream iterator took seconds in a Debug build, on the loop thread.
 std::expected<std::shared_ptr<const std::vector<std::byte>>, std::string> read_file(const std::string &path)
 {
-  std::ifstream file(std::filesystem::path(std::u8string(path.begin(), path.end())), std::ios::binary);
+  std::ifstream file(std::filesystem::path(std::u8string(path.begin(), path.end())), std::ios::binary | std::ios::ate);
   if (!file)
     return std::unexpected("cannot open " + path);
-  std::vector<char> raw((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-  auto bytes = std::make_shared<std::vector<std::byte>>(raw.size());
-  std::memcpy(bytes->data(), raw.data(), raw.size());
+  const auto size = static_cast<std::streamoff>(file.tellg());
+  if (size < 0)
+    return std::unexpected("cannot read " + path);
+  auto bytes = std::make_shared<std::vector<std::byte>>(std::size_t(size));
+  file.seekg(0);
+  if (!file.read(reinterpret_cast<char *>(bytes->data()), size))
+    return std::unexpected("cannot read " + path);
   return bytes;
 }
 

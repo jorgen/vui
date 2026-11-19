@@ -1269,6 +1269,12 @@ bold. A canvas glyph and a grid `text_t` use it -- a grid cell is a code point o
 glyph can be swapped; a shaped `text_t` does not, since that needs the text split into runs by font
 before it is shaped. Where nothing has the code point, the font's own .notdef is drawn.
 
+Loading is on the loop thread, so it has to be quick. The first version read each file through a
+stream iterator, a character at a time, and in a Debug build a Korean cell, which gets past Microsoft
+YaHei, Yu Gothic and MS Gothic to Malgun Gothic, held the window unresponsive for seconds; yat found
+it. A file is now one read: seven Japanese and Korean cells, regular and bold, resolve from cold in
+about 160 ms in Debug, and the regression test bounds it.
+
 Colour glyphs stay out: the glyph atlas is one channel. FreeType is built here without PNG, so Noto
 Color Emoji's bitmaps cannot be read at all; Segoe UI Emoji's COLR layers could be blended by
 FreeType into the image atlas (G55) and drawn as image prims, which is the next step and is not

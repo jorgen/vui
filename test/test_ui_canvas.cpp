@@ -571,4 +571,49 @@ TEST_CASE("vulkan: cells at 1.5x on a fractional origin cover every pixel once, 
   CHECK(image->rgba[(std::size_t(row) * image->extent.width + std::size_t(right)) * 4 + 1] == 255);
 }
 
+TEST_CASE("ui fallback: Japanese and Korean cells resolve once, quickly, and are drawn")
+{
+  // yat drew these through a canvas and its window stopped answering for seconds: every fallback
+  // font was read a character at a time through a stream iterator. Now a file is one read, and each
+  // code point is looked up once per font, found or not.
+  ui::detail::text_engine_t engine;
+  const auto font = roboto();
+  const char32_t cells[] = {U'\u65e5', U'\u672c', U'\u8a9e', U'\ud55c', U'\uad6d', U'\uc5b4', U'\u4e2d'};
+  auto paint = std::make_shared<ui::paint_t>();
+  const auto regular = paint->font(font, 14);
+  const auto bold = paint->font(font.styled(ui::font_style_t::bold), 14);
+  for (std::size_t i = 0; i < std::size(cells); ++i)
+  {
+    paint->glyph(regular, float(i) * 16, 14, cells[i], {1, 1, 1, 1});
+    paint->glyph(bold, float(i) * 16, 30, cells[i], {1, 1, 1, 1});
+  }
+  const auto started = std::chrono::steady_clock::now();
+  std::vector<ui::prim_t> prims;
+  engine.add_canvas({{120, 40}, paint}, 0, 0, prims);
+  const auto took = std::chrono::steady_clock::now() - started;
+  MESSAGE("seven CJK cells, regular and bold, resolved and drawn in " << std::chrono::duration<double, std::milli>(took).count() << " ms");
+  CHECK(took < std::chrono::seconds(3));
+  bool any = false;
+  for (const auto cp : cells)
+  {
+    const auto found = engine.resolve(font, cp);
+    // Asked again, the same answer from memory.
+    CHECK(engine.resolve(font, cp).font == found.font);
+    any = any || found.glyph != 0;
+  }
+  if (!any)
+  {
+    MESSAGE("no system font here has CJK; drawing not checked");
+    return;
+  }
+  CHECK(prims.size() == std::size(cells) * 2);
+  // A second paint of the same cells finds every answer remembered.
+  auto again = std::make_shared<ui::paint_t>(*paint);
+  const auto second = std::chrono::steady_clock::now();
+  std::vector<ui::prim_t> more;
+  engine.add_canvas({{120, 40}, again}, 0, 0, more);
+  CHECK(std::chrono::steady_clock::now() - second < std::chrono::milliseconds(200));
+  CHECK(more.size() == prims.size());
+}
+
 #endif
