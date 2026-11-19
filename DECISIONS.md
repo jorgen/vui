@@ -1299,6 +1299,10 @@ It comes besides the other events, not instead of them. A terminal selects with 
 drag when the program in it has not asked for the mouse, and reports the mouse when it has, and only
 the terminal knows which, per event; a pressable that subscribes to both picks.
 
+Not done: input method composition. Only committed text arrives (G50), so a terminal cannot show a
+preedit string at its cursor yet; that needs `WM_IME_COMPOSITION`, XIM or text-input-v3 and
+`NSTextInputClient` in the backends, and an event for it.
+
 ## G79. The primary selection, beside the clipboard
 
 X11 and Wayland have a second selection: text a program owns while it is selected, pasted with the
