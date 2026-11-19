@@ -68,7 +68,7 @@ ui::color_t cube(int index)
 // terminal takes from Unicode's East Asian Width; these ranges are enough for the sample.
 bool wide(char32_t cp)
 {
-  return (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xff00 && cp <= 0xff60);
+  return (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0x1f300 && cp <= 0x1faff);
 }
 
 std::u32string decode(std::string_view text)
@@ -162,10 +162,11 @@ grid_t sample()
   grid.write(c + 2, 10, "overline", {.overline = true});
 
   grid.write(1, 12, "Fallback:", {.fg = ansi[8]});
-  c = grid.write(11, 12, "┌──┬──┐ ", {.fg = ansi[6]});
-  c = grid.write(c, 12, "漢字 かな 한글 ", {.fg = ansi[11]});
-  grid.write(c, 12, "☃ ★ ✓ → ∑ λ ß é ñ █▓▒░", {.fg = ansi[13]});
-  grid.write(11, 13, "└──┴──┘", {.fg = ansi[6]});
+  c = grid.write(11, 12, "\u250c\u2500\u2500\u252c\u2500\u2500\u2510 ", {.fg = ansi[6]});
+  c = grid.write(c, 12, "\u6f22\u5b57 \u304b\u306a \ud55c\uae00 ", {.fg = ansi[11]});
+  c = grid.write(c, 12, "\u2603 \u2605 \u2713 \u2192 \u2211 \u03bb \u00df \u00e9 \u00f1 \u2588\u2593\u2592\u2591 ", {.fg = ansi[13]});
+  grid.write(c, 12, "\U0001f600\U0001f680\U0001f308", {});
+  grid.write(11, 13, "\u2514\u2500\u2500\u2534\u2500\u2500\u2518", {.fg = ansi[6]});
 
   c = grid.write(1, 15, "user@host", {.fg = ansi[10], .face = ui::font_style_t::bold});
   c = grid.write(c, 15, ":", {});

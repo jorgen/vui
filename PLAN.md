@@ -461,7 +461,8 @@ so only for changed subtrees. Text with no font named uses `run_config_t::font`,
 HarfBuzz. A text reports its baseline, a whole number of pixels below its anchor, which is what a
 row aligned on baselines lines up. `tight` measures a text by its ink rather than its line, for a
 symbol centred on a button (G41). Not yet: bidirectional text, font fallback, wrapping, colour
-glyphs -- G40. A grid `text_t` and a canvas do fall back, per code point (G77).
+glyphs -- G40. A grid `text_t` and a canvas do fall back, per code point (G77), and draw COLR colour
+emoji from the image atlas (G80).
 
 **Plots** (G28, G41, G44): `polyline_t` is a line through points in a box of a given size, mitred at
 its joints (round past a mitre limit of 4, and at its ends), with an optional fill down to the box's

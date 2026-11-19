@@ -981,6 +981,15 @@ struct text_engine_t::impl_t
   image_atlas_t images;
 
   std::unordered_map<glyph_key_t, cached_t, key_hash_t> glyphs;
+  // Colour glyphs (G80): a COLR font's layers, blended by FreeType into straight RGBA and drawn
+  // from the image atlas. Null where the glyph has no layers or FreeType gave no colour.
+  struct colour_t
+  {
+    std::shared_ptr<const image_data_t> image;
+    int left = 0;
+    int top = 0;
+  };
+  std::unordered_map<glyph_key_t, colour_t, key_hash_t> colours;
   std::unordered_map<icon_key_t, cached_t, key_hash_t> icons;
   std::vector<std::shared_ptr<const path_t>> icon_paths; // keep the keys' addresses from being reused
 
@@ -1058,16 +1067,27 @@ struct text_engine_t::impl_t
     resolved_t answer{keep(font), nominal(font, codepoint)};
     if (answer.glyph == 0)
     {
-      // The first fallback font that has it, in the style asked for, so a bold cell stays bold.
+
+      // The first fallback font that has it, in the style asked for, so a bold cell stays bold. A
+      // code point that is shown as an emoji by default looks in the colour fonts first (G80); a
+      // colour glyph has no bold, so it is taken as it is.
       const std::size_t count = fallback_count();
-      for (std::size_t i = 0; i < count && answer.glyph == 0; ++i)
+      const bool emoji = codepoint >= 0x1f000 && codepoint <= 0x1faff;
+      for (int pass = emoji ? 0 : 1; pass < 2 && answer.glyph == 0; ++pass)
       {
-        const font_t *candidate = fallback_font(i);
-        if (!candidate || nominal(*candidate, codepoint) == 0)
-          continue;
-        const font_t *use = font.style() == candidate->style() ? candidate : keep(candidate->styled(font.style()));
-        answer = {use, nominal(*use, codepoint)};
+        for (std::size_t i = 0; i < count && answer.glyph == 0; ++i)
+        {
+          const font_t *candidate = fallback_font(i);
+          if (!candidate || nominal(*candidate, codepoint) == 0)
+            continue;
+          const bool layered = hb_ot_color_has_layers(candidate->data()->face);
+          if (pass == 0 && !layered)
+            continue;
+          const font_t *use = layered || font.style() == candidate->style() ? candidate : keep(candidate->styled(font.style()));
+          answer = {use, nominal(*use, codepoint)};
+        }
       }
+
       // Nothing has it: the font's own .notdef, which is what a reader expects to see.
       if (answer.glyph == 0)
         answer = {keep(font), 0};
@@ -1192,6 +1212,93 @@ struct text_engine_t::impl_t
   }
 
   // ---- rasterizing
+  // The image atlas was emptied to make room: what was laid out names regions that are gone,
+  // converted paints included.
+  void images_emptied()
+  {
+    reset = true;
+    canvases.clear();
+    ++epoch;
+  }
+
+  // The colour version of a glyph, or null: only a glyph with COLR layers has one (G80).
+  const colour_t *colour(const font_t &font, std::int32_t px64, std::uint32_t id)
+  {
+    auto *hb_face = font.data()->face;
+    if (id == 0 || !hb_ot_color_has_layers(hb_face) || hb_ot_color_glyph_get_layers(hb_face, id, 0, nullptr, nullptr) == 0)
+      return nullptr;
+    const glyph_key_t key{font.data(), px64, id, 0};
+    auto it = colours.find(key);
+    if (it == colours.end())
+    {
+      colour_t made;
+      if (auto *face = face_for(font))
+      {
+        if (face->px64 != px64)
+        {
+          FT_Set_Char_Size(face->face, 0, px64, 72, 72);
+          face->px64 = px64;
+        }
+        auto *slot = face->face->glyph;
+        if (FT_Load_Glyph(face->face, id, FT_LOAD_COLOR | FT_LOAD_TARGET_LIGHT) == 0 && FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL) == 0 && slot->bitmap.pixel_mode == FT_PIXEL_MODE_BGRA &&
+            slot->bitmap.width > 0 && slot->bitmap.rows > 0)
+        {
+          // FreeType blends the layers premultiplied, blue first; the image atlas takes straight
+          // RGBA.
+          const auto &bitmap = slot->bitmap;
+          auto image = std::make_shared<image_data_t>();
+          image->width = int(bitmap.width);
+          image->height = int(bitmap.rows);
+          image->rgba.resize(std::size_t(image->width) * std::size_t(image->height) * 4);
+          for (int row = 0; row < image->height; ++row)
+          {
+            const auto *in = bitmap.buffer + std::ptrdiff_t(row) * bitmap.pitch;
+            auto *pixel = &image->rgba[std::size_t(row) * std::size_t(image->width) * 4];
+            for (int column = 0; column < image->width; ++column, in += 4, pixel += 4)
+            {
+              const unsigned alpha = in[3];
+              const auto unpremultiply = [alpha](unsigned c) { return std::uint8_t(alpha ? std::min(255u, (c * 255 + alpha / 2) / alpha) : 0); };
+              pixel[0] = unpremultiply(in[2]);
+              pixel[1] = unpremultiply(in[1]);
+              pixel[2] = unpremultiply(in[0]);
+              pixel[3] = std::uint8_t(alpha);
+            }
+          }
+          made.image = std::move(image);
+          made.left = slot->bitmap_left;
+          made.top = -slot->bitmap_top;
+        }
+      }
+      it = colours.emplace(key, std::move(made)).first;
+    }
+    return it->second.image ? &it->second : nullptr;
+  }
+
+  // The image prim of a colour glyph whose top left is (left, top) pixels from an anchor at (x, y):
+  // in logical units, since an image prim is placed and sampled in them. The opacity is the text's.
+  bool add_colour(const colour_t &colour, float x, float y, int left, int top, float opacity, std::vector<prim_t> &out)
+  {
+    bool emptied = false;
+    const auto *region = images.find(colour.image, emptied);
+    if (emptied)
+      images_emptied();
+    if (!region)
+      return false;
+    prim_t prim;
+    prim.kind = prim_kind_t::image;
+    prim.x = x + float(left) / scale;
+    prim.y = y + float(top) / scale;
+    prim.width = float(region->width) / scale;
+    prim.height = float(region->height) / scale;
+    prim.radii[0] = float(region->x);
+    prim.radii[1] = float(region->y);
+    prim.radii[2] = float(region->width);
+    prim.radii[3] = float(region->height);
+    prim.fill = {1, 1, 1, opacity};
+    out.push_back(prim);
+    return true;
+  }
+
   const cached_t &glyph(const font_t &font, std::int32_t px64, std::uint32_t id, std::uint32_t bin)
   {
     const glyph_key_t key{font.data(), px64, id, bin};
@@ -1359,6 +1466,15 @@ text_engine_t::laid_out_t text_engine_t::add_text(const text_t &text, const font
       drawn = resolved.font;
       id = resolved.glyph;
     }
+    if (drawn != &font)
+    {
+      if (const auto *colour = impl.colour(*drawn, px64, id))
+      {
+        pen += positions[i].x_advance;
+        impl.add_colour(*colour, x, y, int(whole) + colour->left, baseline + colour->top, text.color.a, out);
+        continue;
+      }
+    }
     const auto &cached = impl.glyph(*drawn, px64, id, bin);
     pen += positions[i].x_advance;
     if (cached.width == 0)
@@ -1488,7 +1604,7 @@ void text_engine_t::add_image(const image_t &image, float x, float y, std::vecto
   bool emptied = false;
   const auto *region = impl.images.find(image.data, emptied);
   if (emptied)
-    impl.reset = true;
+    impl.images_emptied();
   if (!region || image.size.width <= 0 || image.size.height <= 0)
     return;
   prim_t prim;
@@ -1601,6 +1717,12 @@ void text_engine_t::paint_prims(const paint_t &paint, std::vector<prim_t> &out)
       const std::int64_t pen = std::llround(double(command.x) * s * 64.0);
       const std::int64_t whole = pen >= 0 ? pen / 64 : -((-pen + 63) / 64);
       const auto bin = std::uint32_t(((pen - whole * 64) * subpixel_bins) / 64);
+      const int baseline = int(std::lround(command.y * s));
+      if (const auto *colour = impl.colour(*resolved.font, px64[command.font], resolved.glyph))
+      {
+        impl.add_colour(*colour, 0, 0, int(whole) + colour->left, baseline + colour->top, command.color.a, out);
+        break;
+      }
       const auto &cached = impl.glyph(*resolved.font, px64[command.font], resolved.glyph, bin);
       if (cached.width == 0)
         break;

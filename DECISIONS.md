@@ -1275,10 +1275,7 @@ YaHei, Yu Gothic and MS Gothic to Malgun Gothic, held the window unresponsive fo
 it. A file is now one read: seven Japanese and Korean cells, regular and bold, resolve from cold in
 about 160 ms in Debug, and the regression test bounds it.
 
-Colour glyphs stay out: the glyph atlas is one channel. FreeType is built here without PNG, so Noto
-Color Emoji's bitmaps cannot be read at all; Segoe UI Emoji's COLR layers could be blended by
-FreeType into the image atlas (G55) and drawn as image prims, which is the next step and is not
-done.
+Colour glyphs are G80's.
 
 ## G78. Raw input for a terminal: Tab kept, and every mouse button
 
@@ -1315,3 +1312,22 @@ compositor without it has no primary selection. Windows and macOS have none: set
 and reading answers `errc::not_supported` at once, without asking the backend. The null backend
 keeps one, so the plumbing is tested everywhere. The toolkit's own text widgets do not set it or
 paste it yet; a terminal does both itself.
+
+## G80. Colour emoji: COLR layers through FreeType into the image atlas
+
+A glyph with COLR layers is blended by FreeType (`FT_LOAD_COLOR`) into a premultiplied BGRA bitmap,
+turned into straight RGBA and put in the image atlas (G55) as an image of its own, kept per font,
+size and glyph; it is drawn as an image prim, its top left the same whole pixels from the anchor a
+coverage glyph would use, untinted, with the text's alpha as its opacity. That reuses the RGBA atlas
+and prim kind 5 rather than adding a colour glyph atlas and a prim kind. An image prim is placed in
+logical units and sampled bilinearly, so a colour glyph can be up to half a pixel off the grid and
+slightly soft; for an emoji that does not show. A code point shown as emoji by default (U+1F000 to
+U+1FAFF) looks in the colour fonts first; anything else keeps G77's order, so a check mark stays
+the text glyph of Segoe UI Symbol. A colour glyph has no bold or italic. An emptied image atlas
+also forgets converted paints, since they name its regions.
+
+Only COLR v0 is drawn: FreeType renders no COLR v1 paint graph through `FT_Render_Glyph`, and is
+built here without PNG, so CBDT (Noto Color Emoji) and sbix (Apple Color Emoji) are not read. In
+practice colour emoji are Windows' Segoe UI Emoji for now; on Linux and macOS an emoji falls back to
+a monochrome glyph where some font has one. Reading PNG strikes would need FreeType's PNG support,
+libpng and zlib, and scaling the fixed-size bitmaps; recorded, not done.

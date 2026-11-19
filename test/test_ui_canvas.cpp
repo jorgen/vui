@@ -438,6 +438,44 @@ TEST_CASE("ui fallback: a code point the font lacks comes from a system font, in
   CHECK(grid[0].radii[0] == prims[0].radii[0]);
 }
 
+TEST_CASE("ui fallback: an emoji comes from a colour font in colour, through the image atlas")
+{
+  ui::detail::text_engine_t engine;
+  const auto font = roboto();
+  const auto face = engine.resolve(font, U'😀');
+  if (*face.font == font || !face.font->has_glyph(U'😀'))
+  {
+    MESSAGE("no system font here has U+1F600; colour glyphs not checked");
+    return;
+  }
+  auto paint = std::make_shared<ui::paint_t>();
+  paint->glyph(paint->font(font, 32), 4, 30, U'😀', {1, 1, 1, 1});
+  std::vector<ui::prim_t> prims;
+  engine.add_canvas({{40, 40}, paint}, 0, 0, prims);
+  REQUIRE(prims.size() == 1);
+  if (prims[0].kind != ui::prim_kind_t::image)
+  {
+    MESSAGE("the font that has U+1F600 has no colour layers here; drawn as coverage");
+    CHECK(prims[0].kind == ui::prim_kind_t::coverage);
+    return;
+  }
+  // A face of about 32 pixels, in colour: some texel is far from grey.
+  CHECK(prims[0].width > 20);
+  CHECK(prims[0].width < 48);
+  const auto images = engine.images();
+  bool coloured = false;
+  for (int y = 0; y < int(prims[0].radii[3]); ++y)
+  {
+    for (int x = 0; x < int(prims[0].radii[2]); ++x)
+    {
+      const auto *p = &images.pixels[(std::size_t(int(prims[0].radii[1]) + y) * std::size_t(images.extent.width) + std::size_t(int(prims[0].radii[0]) + x)) * 4];
+      if (p[3] > 200 && std::abs(int(p[0]) - int(p[2])) > 80)
+        coloured = true;
+    }
+  }
+  CHECK(coloured);
+}
+
 namespace
 {
 // A terminal-like component: a paint it keeps, rebuilt only when its text changes, and a cursor drawn
