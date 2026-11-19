@@ -45,6 +45,7 @@ Copyright (c) 2026 Jørgen Lind
 #include <wayland-cursor.h>
 #include <xkbcommon/xkbcommon.h>
 
+#include "primary-selection-unstable-v1.h"
 #include "xdg-decoration-unstable-v1.h"
 #include "xdg-shell.h"
 
@@ -285,7 +286,7 @@ private:
 class clipboard_read_t
 {
 public:
-  clipboard_read_t(wayland_display_t &display, int fd);
+  clipboard_read_t(wayland_display_t &display, int fd, selection_t which);
   ~clipboard_read_t();
 
   static void on_readable(void *context);
@@ -295,6 +296,7 @@ public:
   std::optional<vio::fd_watch_t> watch;
   std::string text;
   int fd;
+  selection_t which;
   bool done = false;
 };
 
@@ -322,6 +324,14 @@ public:
       wl_data_device_destroy(_data_device);
     if (_data_manager)
       wl_data_device_manager_destroy(_data_manager);
+    if (_primary_source)
+      zwp_primary_selection_source_v1_destroy(_primary_source);
+    if (_primary_offer)
+      zwp_primary_selection_offer_v1_destroy(_primary_offer);
+    if (_primary_device)
+      zwp_primary_selection_device_v1_destroy(_primary_device);
+    if (_primary_manager)
+      zwp_primary_selection_device_manager_v1_destroy(_primary_manager);
     if (_cursor_surface)
       wl_surface_destroy(_cursor_surface);
     if (_cursor_theme)
@@ -460,7 +470,54 @@ public:
     wl_data_offer_receive(_offer, text_mime, fds[1]);
     ::close(fds[1]);
     wl_display_flush(display);
-    reads.push_back(std::make_unique<clipboard_read_t>(*this, fds[0]));
+    reads.push_back(std::make_unique<clipboard_read_t>(*this, fds[0], selection_t::clipboard));
+  }
+
+  // The primary selection (G79), through zwp_primary_selection_device_manager_v1 where the
+  // compositor has it: the clipboard's protocol again under other names, set with the serial of the
+  // latest input as the clipboard is.
+  [[nodiscard]] bool has_primary_selection() const noexcept override
+  {
+    return _primary_manager != nullptr;
+  }
+
+  void set_primary_text(std::string text) override
+  {
+    _primary_text = std::move(text);
+    if (!_primary_device)
+      return;
+    if (_primary_source)
+      zwp_primary_selection_source_v1_destroy(_primary_source);
+    _primary_source = zwp_primary_selection_device_manager_v1_create_source(_primary_manager);
+    zwp_primary_selection_source_v1_add_listener(_primary_source, &primary_source_listener, this);
+    zwp_primary_selection_source_v1_offer(_primary_source, text_mime);
+    zwp_primary_selection_source_v1_offer(_primary_source, "text/plain");
+    zwp_primary_selection_source_v1_offer(_primary_source, "UTF8_STRING");
+    zwp_primary_selection_device_v1_set_selection(_primary_device, _primary_source, _serial);
+  }
+
+  void request_primary_text() override
+  {
+    if (_primary_source)
+    {
+      impl.clipboard_arrived(_primary_text, selection_t::primary);
+      return;
+    }
+    if (!_primary_offer || !_primary_offer_has_text)
+    {
+      impl.clipboard_arrived(std::string(), selection_t::primary);
+      return;
+    }
+    int fds[2];
+    if (::pipe2(fds, O_CLOEXEC | O_NONBLOCK) < 0)
+    {
+      impl.clipboard_arrived(std::unexpected(vio::errc::too_many_open_files), selection_t::primary);
+      return;
+    }
+    zwp_primary_selection_offer_v1_receive(_primary_offer, text_mime, fds[1]);
+    ::close(fds[1]);
+    wl_display_flush(display);
+    reads.push_back(std::make_unique<clipboard_read_t>(*this, fds[0], selection_t::primary));
   }
 
   [[nodiscard]] void *native_display() const noexcept override
@@ -579,6 +636,7 @@ private:
       self->_seat = static_cast<wl_seat *>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 5u)));
       wl_seat_add_listener(self->_seat, &seat_listener, self);
       self->create_data_device();
+      self->create_primary_device();
     }
     else if (kind == wl_output_interface.name)
     {
@@ -594,6 +652,11 @@ private:
     {
       self->_data_manager = static_cast<wl_data_device_manager *>(wl_registry_bind(registry, name, &wl_data_device_manager_interface, std::min(version, 3u)));
       self->create_data_device();
+    }
+    else if (kind == zwp_primary_selection_device_manager_v1_interface.name)
+    {
+      self->_primary_manager = static_cast<zwp_primary_selection_device_manager_v1 *>(wl_registry_bind(registry, name, &zwp_primary_selection_device_manager_v1_interface, 1));
+      self->create_primary_device();
     }
   }
 
@@ -638,6 +701,14 @@ private:
       return;
     _data_device = wl_data_device_manager_get_data_device(_data_manager, _seat);
     wl_data_device_add_listener(_data_device, &data_device_listener, this);
+  }
+
+  void create_primary_device()
+  {
+    if (_primary_device || !_primary_manager || !_seat)
+      return;
+    _primary_device = zwp_primary_selection_device_manager_v1_get_device(_primary_manager, _seat);
+    zwp_primary_selection_device_v1_add_listener(_primary_device, &primary_device_listener, this);
   }
 
   static void on_capabilities(void *data, wl_seat *seat, std::uint32_t capabilities)
@@ -905,15 +976,15 @@ private:
   static void on_source_target(void *, wl_data_source *, const char *)
   {
   }
-  static void on_source_send(void *data, wl_data_source *, const char *, std::int32_t fd)
+  // Write all of `text` into a reader's pipe and close it.
+  static void send_text(const std::string &text, std::int32_t fd)
   {
-    auto *self = static_cast<wayland_display_t *>(data);
     const int flags = ::fcntl(fd, F_GETFL);
     ::fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
     std::size_t sent = 0;
-    while (sent < self->_clipboard_text.size())
+    while (sent < text.size())
     {
-      const auto written = ::write(fd, self->_clipboard_text.data() + sent, self->_clipboard_text.size() - sent);
+      const auto written = ::write(fd, text.data() + sent, text.size() - sent);
       if (written < 0 && errno == EINTR)
         continue;
       if (written <= 0)
@@ -921,6 +992,44 @@ private:
       sent += static_cast<std::size_t>(written);
     }
     ::close(fd);
+  }
+  static void on_source_send(void *data, wl_data_source *, const char *, std::int32_t fd)
+  {
+    send_text(static_cast<wayland_display_t *>(data)->_clipboard_text, fd);
+  }
+
+  static void on_primary_offer(void *data, zwp_primary_selection_device_v1 *, zwp_primary_selection_offer_v1 *offer)
+  {
+    zwp_primary_selection_offer_v1_add_listener(offer, &primary_offer_listener, data);
+  }
+  static void on_primary_selection(void *data, zwp_primary_selection_device_v1 *, zwp_primary_selection_offer_v1 *offer)
+  {
+    auto *self = static_cast<wayland_display_t *>(data);
+    if (self->_primary_offer && self->_primary_offer != offer)
+      zwp_primary_selection_offer_v1_destroy(self->_primary_offer);
+    self->_primary_offer = offer;
+    self->_primary_offer_has_text = offer && zwp_primary_selection_offer_v1_get_user_data(offer) == self->primary_marker();
+  }
+  static void on_primary_offer_mime(void *data, zwp_primary_selection_offer_v1 *offer, const char *mime)
+  {
+    auto *self = static_cast<wayland_display_t *>(data);
+    if (std::strcmp(mime, text_mime) == 0)
+      zwp_primary_selection_offer_v1_set_user_data(offer, self->primary_marker());
+  }
+  void *primary_marker() noexcept
+  {
+    return &_primary_offer_has_text;
+  }
+  static void on_primary_send(void *data, zwp_primary_selection_source_v1 *, const char *, std::int32_t fd)
+  {
+    send_text(static_cast<wayland_display_t *>(data)->_primary_text, fd);
+  }
+  static void on_primary_cancelled(void *data, zwp_primary_selection_source_v1 *source)
+  {
+    auto *self = static_cast<wayland_display_t *>(data);
+    if (self->_primary_source == source)
+      self->_primary_source = nullptr;
+    zwp_primary_selection_source_v1_destroy(source);
   }
   static void on_source_cancelled(void *data, wl_data_source *source)
   {
@@ -948,6 +1057,9 @@ private:
   static constexpr wl_data_device_listener data_device_listener{&on_data_offer, &on_drag_enter, &on_drag_leave, &on_drag_motion, &on_drop, &on_selection};
   static constexpr wl_data_offer_listener offer_listener{&on_offer_mime, &on_offer_actions, &on_offer_action};
   static constexpr wl_data_source_listener source_listener{&on_source_target, &on_source_send, &on_source_cancelled, &on_source_dnd_drop, &on_source_dnd_finished, &on_source_action};
+  static constexpr zwp_primary_selection_device_v1_listener primary_device_listener{&on_primary_offer, &on_primary_selection};
+  static constexpr zwp_primary_selection_offer_v1_listener primary_offer_listener{&on_primary_offer_mime};
+  static constexpr zwp_primary_selection_source_v1_listener primary_source_listener{&on_primary_send, &on_primary_cancelled};
 
   std::optional<vio::fd_watch_t> _watch;
   wl_registry *_registry = nullptr;
@@ -959,6 +1071,11 @@ private:
   wl_data_device *_data_device = nullptr;
   wl_data_offer *_offer = nullptr;
   wl_data_source *_source = nullptr;
+  zwp_primary_selection_device_manager_v1 *_primary_manager = nullptr;
+  zwp_primary_selection_device_v1 *_primary_device = nullptr;
+  zwp_primary_selection_offer_v1 *_primary_offer = nullptr;
+  zwp_primary_selection_source_v1 *_primary_source = nullptr;
+  bool _primary_offer_has_text = false;
   wl_cursor_theme *_cursor_theme = nullptr;
   wl_surface *_cursor_surface = nullptr;
   xkb_context *_xkb = nullptr;
@@ -971,6 +1088,7 @@ private:
   vio::timer_t _repeat;
   vio::deferred_call_t _reap;
   std::string _clipboard_text;
+  std::string _primary_text;
   std::uint32_t _serial = 0;
   std::uint32_t _pointer_serial = 0;
   std::uint32_t _repeat_code = 0;
@@ -979,9 +1097,10 @@ private:
   bool _offer_has_text = false;
 };
 
-clipboard_read_t::clipboard_read_t(wayland_display_t &display, int fd)
+clipboard_read_t::clipboard_read_t(wayland_display_t &display, int fd, selection_t which)
   : display(display)
   , fd(fd)
+  , which(which)
 {
   auto created = vio::fd_watch_create(*display.impl.loop, fd);
   if (!created)
@@ -1035,7 +1154,7 @@ void clipboard_read_t::on_readable(void *context)
 void clipboard_read_t::finish(std::expected<std::string, int> result)
 {
   done = true;
-  display.impl.clipboard_arrived(std::move(result));
+  display.impl.clipboard_arrived(std::move(result), which);
   watch.reset();
   display.read_finished();
 }

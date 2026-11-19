@@ -243,6 +243,21 @@ TEST_CASE("win32: the loop keeps turning inside a modal size loop")
   CHECK(ticks_inside >= 5);
 }
 
+TEST_CASE("win32: there is no primary selection, and asking for it says so")
+{
+  vio::event_loop_t loop;
+  bool refused = false;
+  run_gui_test(loop, [](vio::event_loop_t &loop, bool &refused) -> vio::task_t<void> {
+    auto display = open_win32(loop);
+    CHECK_FALSE(display.has_primary_selection());
+    display.set_primary_text("nowhere");
+    auto got = co_await display.primary_text();
+    refused = !got.has_value() && got.error().code == vio::errc::not_supported;
+    loop.stop();
+  }(loop, refused));
+  CHECK(refused);
+}
+
 TEST_CASE("win32: clipboard text round-trips through the system clipboard")
 {
   vio::event_loop_t loop;

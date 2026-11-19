@@ -10,7 +10,8 @@ choice and its reason.
    and no second loop to hand work across.
 2. Everything is awaited: a frame to draw, input, a resize, a close request.
 3. One interface for what every window system does: create, title, size, position, visibility,
-   fullscreen, minimise and maximise, cursor, clipboard, content scale.
+   fullscreen, minimise and maximise, cursor, clipboard and the primary selection where there is one
+   (G79), content scale.
 4. Rendering contexts for OpenGL, Vulkan, Metal and Direct3D 12, set up from a window, and the
    handles OpenCL and CUDA need to share with them.
 5. macOS (Cocoa), Windows (Win32), Linux on X11 and on Wayland.

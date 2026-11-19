@@ -64,7 +64,8 @@ else()
         file(MAKE_DIRECTORY ${protocol_dir})
         foreach(protocol
                 stable/xdg-shell/xdg-shell.xml
-                unstable/xdg-decoration/xdg-decoration-unstable-v1.xml)
+                unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
+                unstable/primary-selection/primary-selection-unstable-v1.xml)
             get_filename_component(name ${protocol} NAME_WE)
             add_custom_command(
                 OUTPUT ${protocol_dir}/${name}.h ${protocol_dir}/${name}.c

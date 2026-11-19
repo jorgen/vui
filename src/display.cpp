@@ -321,7 +321,8 @@ void display_impl_t::release() noexcept
 
 void display_impl_t::finish()
 {
-  cancel_all(_clipboard_waiters, *this);
+  cancel_all(_clipboard_waiters[0], *this);
+  cancel_all(_clipboard_waiters[1], *this);
   while (auto *waiter = _ready.pop_front())
     waiter->handle.resume();
   backend->close();
@@ -340,19 +341,31 @@ void display_impl_t::forget(window_impl_t &window) noexcept
   std::erase(_dirty, &window);
 }
 
-void display_impl_t::add_clipboard_waiter(value_waiter_t<std::string> &waiter)
+void display_impl_t::add_clipboard_waiter(value_waiter_t<std::string> &waiter, selection_t which)
 {
-  _clipboard_waiters.push_back(waiter);
-  if (_clipboard_requested)
+  const auto i = std::size_t(which);
+  if (which == selection_t::primary && !backend->has_primary_selection())
+  {
+    // Windows and macOS have no primary selection: the answer is known at once.
+    waiter.error = vio::errc::not_supported;
+    ready(waiter);
     return;
-  _clipboard_requested = true;
-  backend->request_clipboard_text();
+  }
+  _clipboard_waiters[i].push_back(waiter);
+  if (_clipboard_requested[i])
+    return;
+  _clipboard_requested[i] = true;
+  if (which == selection_t::primary)
+    backend->request_primary_text();
+  else
+    backend->request_clipboard_text();
 }
 
-void display_impl_t::clipboard_arrived(std::expected<std::string, int> text) noexcept
+void display_impl_t::clipboard_arrived(std::expected<std::string, int> text, selection_t which) noexcept
 {
-  _clipboard_requested = false;
-  while (auto *raw = _clipboard_waiters.pop_front())
+  const auto i = std::size_t(which);
+  _clipboard_requested[i] = false;
+  while (auto *raw = _clipboard_waiters[i].pop_front())
   {
     auto &waiter = as<std::string>(*raw);
     if (text)
@@ -503,6 +516,20 @@ public:
   {
     _display.clipboard_arrived(_clipboard);
   }
+  // The null backend keeps a primary selection, as X11 and Wayland have, so the plumbing is tested
+  // everywhere.
+  [[nodiscard]] bool has_primary_selection() const noexcept override
+  {
+    return true;
+  }
+  void set_primary_text(std::string text) override
+  {
+    _primary = std::move(text);
+  }
+  void request_primary_text() override
+  {
+    _display.clipboard_arrived(_primary, selection_t::primary);
+  }
   [[nodiscard]] void *native_display() const noexcept override
   {
     return nullptr;
@@ -510,6 +537,7 @@ public:
 private:
   display_impl_t &_display;
   std::string _clipboard;
+  std::string _primary;
 };
 } // namespace
 

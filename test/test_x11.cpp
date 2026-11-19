@@ -217,6 +217,31 @@ TEST_CASE("x11: clipboard text moves between two displays")
   CHECK(received == "from vio \xc3\xa6\xc3\xb8\xc3\xa5");
 }
 
+TEST_CASE("x11: the primary selection moves between two displays apart from the clipboard")
+{
+  if (!x11_available())
+    return;
+  vio::event_loop_t loop;
+  std::string primary, clipboard;
+  run_gui_test(loop, [](vio::event_loop_t &loop, std::string &primary, std::string &clipboard) -> vio::task_t<void> {
+    auto owner = open_x11(loop);
+    auto reader = open_x11(loop);
+    CHECK(reader.has_primary_selection());
+    owner.set_clipboard_text("copied");
+    owner.set_primary_text("selected \xc3\xa6");
+    co_await vio::sleep(loop, 20ms);
+    auto got_primary = co_await reader.primary_text();
+    auto got_clipboard = co_await reader.clipboard_text();
+    REQUIRE(got_primary.has_value());
+    REQUIRE(got_clipboard.has_value());
+    primary = *got_primary;
+    clipboard = *got_clipboard;
+    loop.stop();
+  }(loop, primary, clipboard));
+  CHECK(primary == "selected \xc3\xa6");
+  CHECK(clipboard == "copied");
+}
+
 TEST_CASE("x11: frames follow the clock while shown and stop while hidden")
 {
   if (!x11_available())

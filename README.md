@@ -66,7 +66,8 @@ allow it under System Settings, Privacy & Security). Every build is on the [late
 **A window layer** (`vui::vui`)
 
 - Native backends for **X11, Wayland, Win32 and Cocoa**, behind one interface: title, size,
-  position, fullscreen, minimise and maximise, cursor, clipboard and content scale.
+  position, fullscreen, minimise and maximise, cursor, clipboard (and the primary selection on X11
+  and Wayland) and content scale.
 - **Everything is awaited**: a frame to draw, input, a resize, a close request. Input arrives
   through typed subscriptions, such as `window.subscribe<key_event_t, text_event_t>()`. Each
   subscription has its own queue, so every subscriber sees every event of its types, and every

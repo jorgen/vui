@@ -1301,3 +1301,17 @@ had modifiers and a position.
 It comes besides the other events, not instead of them. A terminal selects with the left button's
 drag when the program in it has not asked for the mouse, and reports the mouse when it has, and only
 the terminal knows which, per event; a pressable that subscribes to both picks.
+
+## G79. The primary selection, beside the clipboard
+
+X11 and Wayland have a second selection: text a program owns while it is selected, pasted with the
+middle button, which every terminal on them sets as the user selects. `display_t` and `window_t`
+gained `set_primary_text`, `primary_text()` and `has_primary_selection()`, shaped as the clipboard's
+calls are and run through the same waiters, now one list per selection. On X11 PRIMARY is owned and
+converted as CLIPBOARD is, each converted into a property of its own on the helper window so that a
+read of one never takes the other's reply. On Wayland it is `zwp_primary_selection_device_manager_v1`,
+the clipboard's protocol again under other names, set with the serial of the latest input; a
+compositor without it has no primary selection. Windows and macOS have none: setting does nothing,
+and reading answers `errc::not_supported` at once, without asking the backend. The null backend
+keeps one, so the plumbing is tested everywhere. The toolkit's own text widgets do not set it or
+paste it yet; a terminal does both itself.

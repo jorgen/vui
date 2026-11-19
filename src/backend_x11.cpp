@@ -247,7 +247,7 @@ public:
       return vio::errc::no_such_device;
     screen = DefaultScreen(display);
     root = RootWindow(display, screen);
-    const char *names[] = {"WM_PROTOCOLS", "WM_DELETE_WINDOW", "_NET_WM_NAME", "UTF8_STRING", "_NET_WM_STATE", "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ", "CLIPBOARD", "TARGETS", "VIO_SELECTION", "_MOTIF_WM_HINTS", "_NET_ACTIVE_WINDOW", "INCR"};
+    const char *names[] = {"WM_PROTOCOLS", "WM_DELETE_WINDOW", "_NET_WM_NAME", "UTF8_STRING", "_NET_WM_STATE", "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ", "CLIPBOARD", "TARGETS", "VIO_SELECTION", "_MOTIF_WM_HINTS", "_NET_ACTIVE_WINDOW", "INCR", "VIO_PRIMARY"};
     std::array<Atom, std::size(names)> atoms{};
     XInternAtoms(display, const_cast<char **>(names), static_cast<int>(atoms.size()), False, atoms.data());
     wm_protocols = atoms[0];
@@ -264,6 +264,7 @@ public:
     motif_hints = atoms[11];
     net_active_window = atoms[12];
     incr = atoms[13];
+    primary_property = atoms[14];
 
     Bool detectable = False;
     XkbSetDetectableAutoRepeat(display, True, &detectable);
@@ -331,24 +332,26 @@ public:
 
   void set_clipboard_text(std::string text) override
   {
-    _clipboard_text = std::move(text);
-    XSetSelectionOwner(display, clipboard, _helper, CurrentTime);
+    own(selection_t::clipboard, std::move(text));
   }
 
   void request_clipboard_text() override
   {
-    const Window owner = XGetSelectionOwner(display, clipboard);
-    if (owner == _helper)
-    {
-      impl.clipboard_arrived(_clipboard_text);
-      return;
-    }
-    if (owner == None)
-    {
-      impl.clipboard_arrived(std::string());
-      return;
-    }
-    XConvertSelection(display, clipboard, utf8_string, selection_property, _helper, CurrentTime);
+    request(selection_t::clipboard);
+  }
+
+  // PRIMARY is a selection like CLIPBOARD, owned and converted the same way (G79).
+  [[nodiscard]] bool has_primary_selection() const noexcept override
+  {
+    return true;
+  }
+  void set_primary_text(std::string text) override
+  {
+    own(selection_t::primary, std::move(text));
+  }
+  void request_primary_text() override
+  {
+    request(selection_t::primary);
   }
 
   [[nodiscard]] void *native_display() const noexcept override
@@ -421,8 +424,46 @@ public:
   Atom motif_hints = 0;
   Atom net_active_window = 0;
   Atom incr = 0;
+  Atom primary_property = 0;
 
 private:
+  [[nodiscard]] Atom atom_of(selection_t which) const noexcept
+  {
+    return which == selection_t::primary ? XA_PRIMARY : clipboard;
+  }
+  // Each selection is converted into a property of its own, so a read of one never takes the
+  // other's reply.
+  [[nodiscard]] Atom property_of(selection_t which) const noexcept
+  {
+    return which == selection_t::primary ? primary_property : selection_property;
+  }
+  std::string &text_of(selection_t which) noexcept
+  {
+    return which == selection_t::primary ? _primary_text : _clipboard_text;
+  }
+
+  void own(selection_t which, std::string text)
+  {
+    text_of(which) = std::move(text);
+    XSetSelectionOwner(display, atom_of(which), _helper, CurrentTime);
+  }
+
+  void request(selection_t which)
+  {
+    const Window owner = XGetSelectionOwner(display, atom_of(which));
+    if (owner == _helper)
+    {
+      impl.clipboard_arrived(text_of(which), which);
+      return;
+    }
+    if (owner == None)
+    {
+      impl.clipboard_arrived(std::string(), which);
+      return;
+    }
+    XConvertSelection(display, atom_of(which), utf8_string, property_of(which), _helper, CurrentTime);
+  }
+
   float read_scale()
   {
     const char *resources = XResourceManagerString(display);
@@ -470,7 +511,7 @@ private:
   {
     if (event.type == SelectionClear)
     {
-      _clipboard_text.clear();
+      text_of(event.xselectionclear.selection == XA_PRIMARY ? selection_t::primary : selection_t::clipboard).clear();
     }
     else if (event.type == SelectionRequest)
     {
@@ -491,16 +532,18 @@ private:
       }
       else if (request.target == utf8_string || request.target == XA_STRING)
       {
-        XChangeProperty(display, request.requestor, property, request.target, 8, PropModeReplace, reinterpret_cast<const unsigned char *>(_clipboard_text.data()), static_cast<int>(_clipboard_text.size()));
+        const auto &text = text_of(request.selection == XA_PRIMARY ? selection_t::primary : selection_t::clipboard);
+        XChangeProperty(display, request.requestor, property, request.target, 8, PropModeReplace, reinterpret_cast<const unsigned char *>(text.data()), static_cast<int>(text.size()));
         reply.property = property;
       }
       XSendEvent(display, request.requestor, False, 0, reinterpret_cast<XEvent *>(&reply));
     }
     else if (event.type == SelectionNotify)
     {
+      const auto which = event.xselection.selection == XA_PRIMARY ? selection_t::primary : selection_t::clipboard;
       if (event.xselection.property == None)
       {
-        impl.clipboard_arrived(std::string());
+        impl.clipboard_arrived(std::string(), which);
         return;
       }
       Atom type = None;
@@ -508,12 +551,12 @@ private:
       unsigned long count = 0;
       unsigned long remaining = 0;
       unsigned char *data = nullptr;
-      XGetWindowProperty(display, _helper, selection_property, 0, 0x1fffffff, True, AnyPropertyType, &type, &format, &count, &remaining, &data);
+      XGetWindowProperty(display, _helper, property_of(which), 0, 0x1fffffff, True, AnyPropertyType, &type, &format, &count, &remaining, &data);
       if (type == incr)
       {
         if (data)
           XFree(data);
-        impl.clipboard_arrived(std::unexpected(vio::errc::not_supported));
+        impl.clipboard_arrived(std::unexpected(vio::errc::not_supported), which);
         return;
       }
       std::string text;
@@ -521,7 +564,7 @@ private:
         text.assign(reinterpret_cast<char *>(data), count);
       if (data)
         XFree(data);
-      impl.clipboard_arrived(std::move(text));
+      impl.clipboard_arrived(std::move(text), which);
     }
   }
 
@@ -530,6 +573,7 @@ private:
   std::unordered_map<Window, x11_window_t *> _windows;
   std::array<Cursor, static_cast<std::size_t>(cursor_t::hidden) + 1> _cursors{};
   std::string _clipboard_text;
+  std::string _primary_text;
   Window _helper = 0;
 };
 

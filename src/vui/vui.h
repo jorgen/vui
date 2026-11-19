@@ -36,11 +36,13 @@ namespace vui
 {
 class window_t;
 
+// The text of the clipboard or of the primary selection, awaited: `co_await window.clipboard_text()`.
 class clipboard_awaitable_t : detail::value_waiter_t<std::string>
 {
 public:
-  explicit clipboard_awaitable_t(detail::display_impl_t *display) noexcept
+  explicit clipboard_awaitable_t(detail::display_impl_t *display, detail::selection_t which = detail::selection_t::clipboard) noexcept
     : _display(display)
+    , _which(which)
   {
   }
   clipboard_awaitable_t(const clipboard_awaitable_t &) = delete;
@@ -58,7 +60,7 @@ public:
   void await_suspend(std::coroutine_handle<> continuation)
   {
     handle = continuation;
-    _display->add_clipboard_waiter(*this);
+    _display->add_clipboard_waiter(*this, _which);
   }
   std::expected<std::string, vio::error_t> await_resume()
   {
@@ -71,6 +73,7 @@ public:
 
 private:
   detail::display_impl_t *_display;
+  detail::selection_t _which;
 };
 
 class display_t
@@ -107,6 +110,22 @@ public:
   [[nodiscard]] clipboard_awaitable_t clipboard_text() noexcept
   {
     return clipboard_awaitable_t(_impl.get());
+  }
+
+  // The primary selection (G79): text a program owns while it is selected, which a middle click
+  // pastes, on X11 and on Wayland where the compositor offers zwp_primary_selection_device_manager_v1.
+  // Elsewhere setting it does nothing and reading it is errc::not_supported.
+  [[nodiscard]] bool has_primary_selection() const noexcept
+  {
+    return _impl->backend->has_primary_selection();
+  }
+  void set_primary_text(std::string text)
+  {
+    _impl->backend->set_primary_text(std::move(text));
+  }
+  [[nodiscard]] clipboard_awaitable_t primary_text() noexcept
+  {
+    return clipboard_awaitable_t(_impl.get(), detail::selection_t::primary);
   }
 
   [[nodiscard]] detail::display_impl_t *impl() const noexcept
@@ -273,6 +292,20 @@ public:
   [[nodiscard]] clipboard_awaitable_t clipboard_text() noexcept
   {
     return clipboard_awaitable_t(_impl ? &_impl->display : nullptr);
+  }
+  // The display's primary selection (G79), likewise.
+  [[nodiscard]] bool has_primary_selection() const noexcept
+  {
+    return _impl && _impl->display.backend->has_primary_selection();
+  }
+  void set_primary_text(std::string text)
+  {
+    if (_impl)
+      _impl->display.backend->set_primary_text(std::move(text));
+  }
+  [[nodiscard]] clipboard_awaitable_t primary_text() noexcept
+  {
+    return clipboard_awaitable_t(_impl ? &_impl->display : nullptr, detail::selection_t::primary);
   }
 
   [[nodiscard]] detail::window_impl_t *impl() const noexcept

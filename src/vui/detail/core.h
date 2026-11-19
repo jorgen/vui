@@ -99,6 +99,13 @@ struct display_config_t
 
 namespace detail
 {
+// Which selection text is set in or read from (G79): the clipboard, or the primary selection.
+enum class selection_t : std::uint8_t
+{
+  clipboard,
+  primary,
+};
+
 [[nodiscard]] inline vio::timer_t make_timer(vio::event_loop_t &loop)
 {
   return std::move(*vio::timer_create(loop));
@@ -298,6 +305,18 @@ public:
   }
   virtual void set_clipboard_text(std::string text) = 0;
   virtual void request_clipboard_text() = 0;
+  // The primary selection (G79): what was last selected, which a middle click pastes. Only X11 and
+  // Wayland have one; a backend without it is never asked for it.
+  [[nodiscard]] virtual bool has_primary_selection() const noexcept
+  {
+    return false;
+  }
+  virtual void set_primary_text(std::string)
+  {
+  }
+  virtual void request_primary_text()
+  {
+  }
   [[nodiscard]] virtual void *native_display() const noexcept = 0;
   virtual void close() noexcept
   {
@@ -397,8 +416,8 @@ public:
   void mark_dirty(window_impl_t &window);
   void forget(window_impl_t &window) noexcept;
 
-  void clipboard_arrived(std::expected<std::string, int> text) noexcept;
-  void add_clipboard_waiter(value_waiter_t<std::string> &waiter);
+  void clipboard_arrived(std::expected<std::string, int> text, selection_t which = selection_t::clipboard) noexcept;
+  void add_clipboard_waiter(value_waiter_t<std::string> &waiter, selection_t which = selection_t::clipboard);
 
   vio::event_loop_t *loop;
   display_config_t config;
@@ -414,10 +433,10 @@ private:
   vio::before_block_hook_t _pump_hook;
   vio::deferred_call_t _finish;
   waiter_list_t _ready;
-  waiter_list_t _clipboard_waiters;
-  std::vector<std::expected<std::string, int>> _clipboard_results;
+  // Per selection_t: who waits for its text, and whether the backend has been asked for it.
+  waiter_list_t _clipboard_waiters[2];
   std::vector<window_impl_t *> _dirty;
-  bool _clipboard_requested = false;
+  bool _clipboard_requested[2] = {false, false};
   bool _started = false;
 };
 

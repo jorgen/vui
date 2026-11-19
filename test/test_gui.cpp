@@ -329,6 +329,27 @@ TEST_CASE("the clipboard round-trips through the display")
   CHECK(text == "hello");
 }
 
+TEST_CASE("the primary selection is kept apart from the clipboard")
+{
+  vio::event_loop_t loop;
+  std::string clipboard, primary;
+  run_gui_test(loop, [](vio::event_loop_t &loop, std::string &clipboard, std::string &primary) -> vio::task_t<void> {
+    auto display = open_null(loop);
+    CHECK(display.has_primary_selection());
+    display.set_clipboard_text("copied");
+    display.set_primary_text("selected");
+    auto got_primary = co_await display.primary_text();
+    auto got_clipboard = co_await display.clipboard_text();
+    REQUIRE(got_primary.has_value());
+    REQUIRE(got_clipboard.has_value());
+    primary = *got_primary;
+    clipboard = *got_clipboard;
+    loop.stop();
+  }(loop, clipboard, primary));
+  CHECK(clipboard == "copied");
+  CHECK(primary == "selected");
+}
+
 TEST_CASE("a coroutine can drop its window from inside a resumed await")
 {
   vio::event_loop_t loop;

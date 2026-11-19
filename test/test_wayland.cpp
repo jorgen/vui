@@ -211,4 +211,30 @@ TEST_CASE("wayland: a selection set before any input focus is refused and reads 
   CHECK(text.empty());
 }
 
+TEST_CASE("wayland: the primary selection is there where the compositor offers it, refused before focus")
+{
+  if (!wayland_available())
+    return;
+  vio::event_loop_t loop;
+  std::string text;
+  bool supported = false;
+  run_gui_test(loop, [](vio::event_loop_t &loop, std::string &text, bool &supported) -> vio::task_t<void> {
+    auto display = open_wayland(loop);
+    supported = display.has_primary_selection();
+    display.set_primary_text("selected");
+    co_await vio::sleep(loop, 50ms);
+    auto got = co_await display.primary_text();
+    if (supported)
+    {
+      REQUIRE(got.has_value());
+      text = *got;
+    }
+    else
+      CHECK_FALSE(got.has_value());
+    loop.stop();
+  }(loop, text, supported));
+  MESSAGE(std::string("primary selection ") + (supported ? "offered" : "not offered") + " by the compositor");
+  CHECK(text.empty());
+}
+
 #endif
