@@ -1,0 +1,68 @@
+name: Pages
+
+# The web demos (WEB_PLAN.md): vui built with Emscripten and drawn through WebGPU, published on
+# GitHub Pages from every push to master. Separate from CI, like the native demos.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  CMDEP_DIR: 3rdparty
+  EMSDK_VERSION: 7.0.1
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache 3rdparty dependencies
+        uses: actions/cache@v4
+        with:
+          path: 3rdparty
+          key: 3rdparty-web-${{ hashFiles('cmake/3rdPartyPackages.cmake', 'cmake/cmdep.lock', 'CMakeLists.txt') }}
+          restore-keys: 3rdparty-web-
+
+      - name: Install emsdk
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git
+          ./emsdk/emsdk install "$EMSDK_VERSION"
+          ./emsdk/emsdk activate "$EMSDK_VERSION"
+
+      - name: Build
+        run: |
+          sudo apt-get install -y ninja-build
+          source ./emsdk/emsdk_env.sh
+          emcmake cmake -S . -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release -DVUI_BUILD_TESTS=OFF
+          cmake --build build-web
+
+      - name: Collect the site
+        run: |
+          mkdir site
+          cp build-web/index.html site/
+          cp build-web/vui_*.html build-web/vui_*.js build-web/vui_*.wasm site/
+          ls -la site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

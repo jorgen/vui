@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://github.com/jorgen/vui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jorgen/vui/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/jorgen/vui/releases/tag/latest"><img alt="Demos" src="https://github.com/jorgen/vui/actions/workflows/demos.yml/badge.svg"></a>
+  <a href="https://jorgen.github.io/vui/"><img alt="Live demo" src="https://github.com/jorgen/vui/actions/workflows/pages.yml/badge.svg"></a>
   <img alt="C++23" src="https://img.shields.io/badge/C%2B%2B-23-8b5cf6">
   <img alt="Platforms" src="https://img.shields.io/badge/platforms-X11%20%7C%20Wayland%20%7C%20Win32%20%7C%20Cocoa-06b6d4">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1e1b3a"></a>
@@ -49,8 +50,12 @@ no second loop to hand work across and nothing to lock.
 
 ## Try the demos
 
-The task manager and the explorer, built from the latest commit on master. Each is one executable
-that needs nothing installed:
+**In the browser:** [jorgen.github.io/vui](https://jorgen.github.io/vui/) runs the counters, widgets,
+cells and 200,000-chip demos, built with Emscripten and drawn through WebGPU. It needs a browser with
+WebGPU, such as a current Chrome or Edge.
+
+**Native:** the task manager and the explorer, built from the latest commit on master. Each is one
+executable that needs nothing installed:
 
 | | |
 | --- | --- |
