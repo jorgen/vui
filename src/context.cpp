@@ -256,6 +256,8 @@ std::vector<const char *> required_instance_extensions(platform_t platform)
     return {"VK_KHR_surface", "VK_KHR_win32_surface"};
   case platform_t::cocoa:
     return {"VK_KHR_surface", "VK_EXT_metal_surface"};
+  case platform_t::web:
+    break;
   }
   return {};
 }
@@ -317,6 +319,8 @@ std::expected<std::uint64_t, vio::error_t> create_surface(window_t &window, void
     result = create(instance, &info, allocator, &surface);
     break;
   }
+  case platform_t::web:
+    return std::unexpected(vio::make_error(vio::errc::not_supported));
   }
   if (result != 0)
     return std::unexpected(vio::make_error(vio::errc::not_supported));

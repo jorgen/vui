@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>vui in the browser</title>
+  <style>
+    body { font: 15px system-ui, sans-serif; background: #202024; color: #e8e8ee; margin: 48px; }
+    a { color: #6fb3ff; }
+    li { margin: 8px 0; }
+    .note { color: #9a9aa6; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>vui in the browser</h1>
+  <p>vui and vio built with Emscripten, drawn through WebGPU (WEB_PLAN.md).</p>
+  <ul>
+    <li><a href="vui_ui_counter.html">Counters and plots</a>: buttons, text shaped by HarfBuzz, live plots, a heatmap</li>
+    <li><a href="vui_ui_widgets.html">Widgets</a>: checkboxes, combo boxes, buttons</li>
+    <li><a href="vui_ui_cells.html">Cells</a>: a terminal-style grid with bold and italic faces, colours and decorations</li>
+    <li><a href="vui_ui_chips.html">Chips</a>: 200,000 movable, editable chips; drag to pan, wheel to zoom, drag a chip to move it, click one and type</li>
+  </ul>
+  <p class="note">Needs WebGPU: a current Chrome or Edge. Serve this folder over HTTP; file:// does not load the .wasm.</p>
+</body>
+</html>

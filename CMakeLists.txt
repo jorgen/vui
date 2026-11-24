@@ -38,7 +38,10 @@ set(VUI_SOURCES src/display.cpp src/context.cpp)
 set(VUI_LIBRARIES vio)
 set(VUI_DEFINITIONS)
 
-if(WIN32)
+if(EMSCRIPTEN)
+    # The browser (WEB_PLAN.md): a window is a canvas, and WebGPU is the only renderer.
+    list(APPEND VUI_SOURCES src/backend_web.cpp)
+elseif(WIN32)
     list(APPEND VUI_SOURCES src/backend_win32.cpp src/context_win32.cpp)
     list(APPEND VUI_LIBRARIES user32 gdi32 dwmapi ole32 shell32 uuid)
 elseif(APPLE)
@@ -89,7 +92,14 @@ target_link_libraries(vui PUBLIC ${VUI_LIBRARIES})
 target_compile_definitions(vui PRIVATE ${VUI_DEFINITIONS})
 
 # The declarative toolkit, on top of the window layer and kept out of it (PLAN.md, "UI toolkit").
-add_library(vui_ui STATIC src/ui.cpp src/ui_text.cpp src/ui_vulkan.cpp src/ui_widgets.cpp)
+if(EMSCRIPTEN)
+    add_library(vui_ui STATIC src/ui.cpp src/ui_text.cpp src/ui_webgpu.cpp src/ui_widgets.cpp)
+    # webgpu.h over navigator.gpu, at compile and link time alike.
+    target_compile_options(vui_ui PUBLIC --use-port=emdawnwebgpu)
+    target_link_options(vui_ui PUBLIC --use-port=emdawnwebgpu)
+else()
+    add_library(vui_ui STATIC src/ui.cpp src/ui_text.cpp src/ui_vulkan.cpp src/ui_webgpu.cpp src/ui_widgets.cpp)
+endif()
 add_library(vui::ui ALIAS vui_ui)
 # FreeType and HarfBuzz stay private: nothing in ui.h names them (G27).
 target_link_libraries(vui_ui PUBLIC vui PRIVATE vui::freetype vui::harfbuzz)
@@ -127,11 +137,15 @@ if(VUI_SLANGC)
                 "-DNAMES=ui_vertex$<SEMICOLON>ui_fragment"
                 "-DFILES=${shader_dir}/ui.vert.spv$<SEMICOLON>${shader_dir}/ui.frag.spv"
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake
+        COMMAND ${VUI_SLANGC} ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/ui.slang -target wgsl
+                -entry vertexMain -stage vertex -entry fragmentMain -stage fragment -o ${shader_dir}/ui.wgsl
+        COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_dir}/ui.wgsl -DOUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/ui_wgsl.h
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_wgsl.cmake
         COMMENT "Compiling the UI shaders with slangc"
         VERBATIM)
 endif()
 
-if(VUI_BUILD_TESTS)
+if(VUI_BUILD_TESTS AND NOT EMSCRIPTEN)
     set(VUI_TEST_SOURCES test/test_main.cpp test/test_gui.cpp test/test_ui.cpp test/test_ui_render.cpp test/test_ui_text.cpp test/test_ui_layout.cpp test/test_ui_components.cpp test/test_ui_widgets.cpp test/test_ui_text_widgets.cpp test/test_ui_canvas.cpp)
     if(WIN32)
         list(APPEND VUI_TEST_SOURCES test/test_win32.cpp)
@@ -156,7 +170,33 @@ if(VUI_BUILD_TESTS)
     add_test(NAME vui_tests COMMAND vui_tests)
 endif()
 
-if(VUI_BUILD_EXAMPLES)
+if(VUI_BUILD_EXAMPLES AND EMSCRIPTEN)
+    # Each example is a page: vui_<name>.html with its .js and .wasm, from web/shell.html. The fonts
+    # are embedded at the paths the Linux build looks in.
+    set(VUI_WEB_FONTS "${dejavu_fonts_SOURCE_DIR}/ttf")
+    function(add_vui_web_example name source)
+        add_executable(${name} examples/${source})
+        target_link_libraries(${name} PRIVATE vui vui_ui)
+        set_target_properties(${name} PROPERTIES SUFFIX ".html")
+        target_link_options(${name} PRIVATE
+            -sALLOW_MEMORY_GROWTH=1
+            -sSTACK_SIZE=1048576
+            "--shell-file=${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
+            "--embed-file=${VUI_WEB_FONTS}/DejaVuSans.ttf@/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+            "--embed-file=${VUI_WEB_FONTS}/DejaVuSansMono.ttf@/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
+        set_property(TARGET ${name} APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html")
+    endfunction()
+    add_vui_web_example(vui_ui_counter ui_counter.cpp)
+    add_vui_web_example(vui_ui_widgets ui_widgets.cpp)
+    add_vui_web_example(vui_ui_chips ui_chips.cpp)
+    add_vui_web_example(vui_ui_cells ui_cells.cpp)
+    # A terminal's bold and italic cells: the monospace family's other faces, found beside it (G75).
+    foreach(face Bold Oblique BoldOblique)
+        target_link_options(vui_ui_cells PRIVATE
+            "--embed-file=${VUI_WEB_FONTS}/DejaVuSansMono-${face}.ttf@/usr/share/fonts/truetype/dejavu/DejaVuSansMono-${face}.ttf")
+    endforeach()
+    configure_file(web/index.html "${CMAKE_CURRENT_BINARY_DIR}/index.html" COPYONLY)
+elseif(VUI_BUILD_EXAMPLES)
     function(add_vui_example name source)
         add_executable(${name} examples/${source})
         target_link_libraries(${name} PRIVATE vui ${ARGN})

@@ -2392,7 +2392,7 @@ std::unique_ptr<renderer_t> make_gl_renderer(window_t &window, std::string &why)
 
 namespace
 {
-std::unique_ptr<renderer_t> choose_renderer(window_t &window, const run_config_t &config)
+vio::task_t<std::unique_ptr<renderer_t>> choose_renderer(window_t &window, const run_config_t &config)
 {
   auto report = [&config](std::string_view what)
   {
@@ -2402,7 +2402,7 @@ std::unique_ptr<renderer_t> choose_renderer(window_t &window, const run_config_t
   if (!config.draw)
   {
     report("none: drawing is off");
-    return nullptr;
+    co_return nullptr;
   }
   // A window with nothing native under it (the null backend) can have no surface. Asking anyway
   // would load the Vulkan driver only to fail, which is slow and, under LeakSanitizer, noisy (G18).
@@ -2410,32 +2410,56 @@ std::unique_ptr<renderer_t> choose_renderer(window_t &window, const run_config_t
   if (!native.handle && !native.id)
   {
     report("none: the window has no native surface");
-    return nullptr;
+    co_return nullptr;
   }
   std::string tried;
+#if defined(__EMSCRIPTEN__)
+  // A browser has WebGPU and nothing else this renderer can use.
+  {
+    std::string why;
+    if (auto renderer = co_await make_webgpu_renderer(window, &why))
+    {
+      report(renderer->describe());
+      co_return renderer;
+    }
+    report("none: webgpu: " + why);
+    co_return nullptr;
+  }
+#endif
+  if (config.api == render_api_t::webgpu)
+  {
+    std::string why;
+    if (auto renderer = co_await make_webgpu_renderer(window, &why))
+    {
+      report(renderer->describe());
+      co_return renderer;
+    }
+    report("none: webgpu: " + why);
+    co_return nullptr;
+  }
   if (config.api == render_api_t::automatic || config.api == render_api_t::vulkan)
   {
     std::string why;
     if (auto renderer = make_vulkan_renderer(window, config.vulkan_device, why))
     {
       report(renderer->describe());
-      return renderer;
+      co_return renderer;
     }
     tried = "vulkan: " + why;
     if (config.api == render_api_t::vulkan)
     {
       report("none: " + tried);
-      return nullptr;
+      co_return nullptr;
     }
   }
   std::string why;
   if (auto renderer = make_gl_renderer(window, why))
   {
     report(renderer->describe() + (tried.empty() ? "" : " (" + tried + ")"));
-    return renderer;
+    co_return renderer;
   }
   report("none: " + (tried.empty() ? "" : tried + "; ") + "gl: " + why);
-  return nullptr;
+  co_return nullptr;
 }
 
 vio::task_t<void> pointer_loop(window_t &window, runtime_t &runtime)
@@ -2488,7 +2512,7 @@ vio::task_t<void> run_root(window_t &window, mount_t root, run_config_t config)
 {
   runtime_t runtime(window, std::move(config));
   runtime.set_root(root);
-  auto renderer = choose_renderer(window, runtime.config());
+  auto renderer = co_await choose_renderer(window, runtime.config());
   auto pointer = pointer_loop(window, runtime);
   auto keys = key_loop(window, runtime);
   auto repaints = repaint_loop(window, runtime);

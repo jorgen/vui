@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>vui</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f4f6; }
+    /* The first vui window takes this canvas; its CSS size is the window's size. */
+    #canvas { display: block; width: 100vw; height: 100vh; }
+    #status {
+      position: fixed; left: 12px; bottom: 10px; font: 12px system-ui, sans-serif; color: #667;
+      pointer-events: none;
+    }
+    #status.error { color: #b00020; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="status">loading…</div>
+  <script>
+    const status = document.getElementById('status');
+    if (!navigator.gpu) {
+      status.className = 'error';
+      status.textContent = 'This browser has no WebGPU (navigator.gpu). Try a current Chrome or Edge.';
+    }
+    var Module = {
+      print: (text) => console.log(text),
+      printErr: (text) => {
+        console.warn(text);
+        if (text.startsWith('renderer: ')) status.textContent = text;
+      },
+      onRuntimeInitialized: () => {
+        if (!navigator.gpu) return;
+        status.textContent = 'starting…';
+        setTimeout(() => { if (status.textContent === 'starting…') status.textContent = ''; }, 2000);
+      },
+      onAbort: (what) => { status.className = 'error'; status.textContent = 'aborted: ' + what; },
+    };
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

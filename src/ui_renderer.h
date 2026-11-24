@@ -49,6 +49,9 @@ public:
 // Each returns nullptr with `why` filled in when its API is unavailable here.
 std::unique_ptr<renderer_t> make_vulkan_renderer(window_t &window, const std::optional<vulkan_device_t> &shared, std::string &why);
 std::unique_ptr<renderer_t> make_gl_renderer(window_t &window, std::string &why);
+// Awaited: a WebGPU adapter and device arrive through callbacks, and in a browser nothing may wait
+// for them (WEB_PLAN.md, G85). `why` is filled in when it returns nullptr.
+vio::task_t<std::unique_ptr<renderer_t>> make_webgpu_renderer(window_t &window, std::string *why);
 
 // For tests: draw display lists in order into an image with no window, through one pipeline as a
 // window would, and read back the last, sRGB-encoded RGBA8, rows top to bottom. Runs wherever a

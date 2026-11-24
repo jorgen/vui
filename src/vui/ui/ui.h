@@ -2294,6 +2294,8 @@ enum class render_api_t : std::uint8_t
   automatic,
   vulkan,
   gl,
+  // WebGPU: in a browser, the only one there is (WEB_PLAN.md).
+  webgpu,
 };
 
 // What one frame cost, for a program measuring itself. Times are CPU time on the loop thread:

@@ -52,7 +52,8 @@ enum class platform_t : std::uint8_t
   x11,
   wayland,
   win32,
-  cocoa
+  cocoa,
+  web
 };
 
 struct native_window_t

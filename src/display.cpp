@@ -572,6 +572,8 @@ backend_factory_t choose_backend(std::string_view name, int &error)
   }
 #if defined(_WIN32)
   return &make_win32_backend;
+#elif defined(__EMSCRIPTEN__)
+  return &make_web_backend;
 #elif defined(__APPLE__)
   return &make_cocoa_backend;
 #else

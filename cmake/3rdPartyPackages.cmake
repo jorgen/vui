@@ -33,6 +33,14 @@ if(VUI_BUILD_EXAMPLES)
         SHA256=e4e3bba9c572a4a4148373a914d88ea0f0d11de8cc2c66739926e7eca0223319)
 endif()
 
+# A page has no system fonts: the web build embeds DejaVu where font_t::system_default() and
+# system_monospace() look for it on Linux (WEB_PLAN.md, G87).
+if(EMSCRIPTEN)
+    CmDepFetchPackage(dejavu_fonts 2.37
+        https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.tar.bz2
+        SHA256=fa9ca4d13871dd122f61258a80d01751d603b4d3ee14095d65453b4e846e17d7)
+endif()
+
 if(VUI_BUILD_TESTS)
     CmDepFetchPackage(doctest v2.4.11
         https://github.com/doctest/doctest/archive/refs/tags/v2.4.12.tar.gz

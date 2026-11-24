@@ -22,6 +22,12 @@ a commit that is on GitHub, or CI cannot fetch it.
 
 On Windows, run `vcvars64.bat` before configuring.
 
+The browser build (WEB_PLAN.md): with emsdk active, `emcmake cmake -S . -B build-web -G Ninja
+-DCMAKE_BUILD_TYPE=Release -DVUI_BUILD_TESTS=OFF`, `cmake --build build-web`, then serve `build-web/`
+over HTTP (`python -m http.server`) and open `index.html` in a browser with WebGPU. Each web example
+is `vui_<name>.html/.js/.wasm`; `.github/workflows/pages.yml` publishes them to GitHub Pages. The
+WGSL in `src/shaders/ui_wgsl.h` comes from the same `vui_shaders` target as the SPIR-V.
+
 `cmake --preset dist-windows` then `cmake --build --preset dist-windows` builds the redistributable
 demos (static runtime, GUI subsystem) and zips them in `build-dist/`; `docs/demos.txt` is the zip's
 readme.
