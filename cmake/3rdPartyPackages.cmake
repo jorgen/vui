@@ -3,10 +3,10 @@
 # VUI_USE_SYSTEM_<DEP> (option; ON => consume a pre-built copy instead of fetching). The VUI_ prefix
 # is derived from the project() name. Build against a local vio with -DCMDEP_SOURCE_DIR_VIO=<dir>.
 
-CmDepFetchGit(vio 1efa34f
+CmDepFetchGit(vio e090d73
     https://github.com/jorgen/vio.git
-    1efa34f9b9cfae6d6268791267a66a63f1a5fb57
-    SHA256=a5dc12a4e47b5d14ac1c4c4488e228d0fa90c3243302ff35c5ea923d27ae1700)
+    e090d7367091879be37cea468124e2f8706338cf
+    SHA256=f13c8dc5a2012ad41da13843c38e7eb1fca3a8573dcfa4a384b6c34d896eaf38)
 
 # Vulkan-Headers: the declarations only. The renderer loads the Vulkan loader at run time
 # (DECISIONS.md G6, G31), so nothing is linked and no Vulkan SDK is needed to build.

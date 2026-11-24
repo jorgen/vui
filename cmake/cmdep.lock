@@ -32,12 +32,12 @@ CmDepLocked(stb
     REQUESTED_BY [==[.=31c1ad3]==])
 
 CmDepLocked(vio
-    VERSION [==[1efa34f]==]
+    VERSION [==[e090d73]==]
     GIT [==[https://github.com/jorgen/vio.git]==]
-    COMMIT 1efa34f9b9cfae6d6268791267a66a63f1a5fb57
-    HASH SHA256=a5dc12a4e47b5d14ac1c4c4488e228d0fa90c3243302ff35c5ea923d27ae1700
+    COMMIT e090d7367091879be37cea468124e2f8706338cf
+    HASH SHA256=f13c8dc5a2012ad41da13843c38e7eb1fca3a8573dcfa4a384b6c34d896eaf38
     DECLARED_BY .
-    REQUESTED_BY [==[.=1efa34f]==])
+    REQUESTED_BY [==[.=e090d73]==])
 
 CmDepLocked(vulkan_headers
     VERSION [==[1.4.350.1]==]
